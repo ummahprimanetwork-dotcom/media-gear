@@ -28,7 +28,7 @@ var App = (function () {
     go: function (el) { App.go(el.getAttribute('data-to')); },
     back: function () { history.length > 1 && App.route !== homeRoute() ? history.back() : App.go(homeRoute()); },
     profile: openProfile,
-    refresh: function (el) { el.classList.add('spinning'); App.render(); }
+    refresh: function (el) { el.classList.add('spinning'); API.freshen(); App.render(); }
   };
 
   function homeRoute() { return App.mode === 'admin' ? 'a-home' : 'home'; }
@@ -44,16 +44,24 @@ var App = (function () {
   };
   window.addEventListener('popstate', function () { var r = location.hash.slice(1); if (r && r !== App.route) { UI.closeAll(); App.route = r; App.render(); } });
 
-  App.render = function () {
+  App.render = function (soft) {
     App.timers.forEach(clearInterval); App.timers = [];
+    API.newPage();
     if (!App.user) return renderLogin();
     var parts = (App.route || homeRoute()).split('/');
     var name = parts[0], arg = parts.slice(1).join('/');
-    if (name === 'hub') return renderHub();
+    if (name === 'hub') { var hy = window.scrollY; renderHub(); if (soft) window.scrollTo(0, hy); return; }
     if (name.indexOf('a-') === 0 && App.views[name] && App.mode !== 'admin' && App.user.role === 'admin') setMode('admin');
     else if (name.indexOf('a-') !== 0 && App.views[name] && App.mode === 'admin') setMode('user');
     if (!App.views[name] || (App.mode === 'admin') !== (name.indexOf('a-') === 0)) { name = homeRoute(); arg = ''; }
     App.acts = {};
+    var oldMain = document.getElementById('main');
+    if (soft && oldMain && oldMain.getAttribute('data-view') === name + '/' + arg) {
+      // Same page with newer data: redraw in place, keep the scroll position.
+      var y = window.scrollY;
+      Promise.resolve(App.views[name](oldMain, arg)).then(function () { window.scrollTo(0, y); }, function () {});
+      return;
+    }
     var navKey = NAV_PARENT[name] || name;
     root.innerHTML =
       '<div class="shell">' +
@@ -67,11 +75,37 @@ var App = (function () {
       }).join('') + '</div></nav>' +
       '</div>';
     var main = document.getElementById('main');
+    main.setAttribute('data-view', name + '/' + arg);
     main.innerHTML = UI.loading();
     window.scrollTo(0, 0);
     Promise.resolve(App.views[name](main, arg)).catch(function (e) { showError(main, e); });
   };
   function setMode(m) { App.mode = m; document.body.setAttribute('data-app', m); }
+
+  // A page was shown from the phone's cache and newer data just arrived: redraw it quietly,
+  // unless the person is in the middle of something (typing, a pop-up, a half-filled form).
+  var softTimer = null;
+  API.onUpdate(function () {
+    clearTimeout(softTimer);
+    softTimer = setTimeout(function () {
+      if (!App.user || UI.topSheet()) return;
+      var a = document.activeElement;
+      if (a && /^(INPUT|TEXTAREA|SELECT)$/.test(a.tagName)) return;
+      var busy = [].some.call(document.querySelectorAll('#app input, #app textarea, #app select'), function (f) {
+        if (f.type === 'checkbox' || f.type === 'radio') return f.checked !== f.defaultChecked;
+        if (f.tagName === 'SELECT') return [].some.call(f.options, function (o) { return o.selected !== o.defaultSelected; });
+        return f.value !== f.defaultValue;
+      });
+      if (busy) return;
+      App.render(true);
+    }, 60);
+  });
+  /** Load the main pages' data in the background right after sign-in. */
+  function warm() {
+    var list = [['board'], ['catalog'], ['presets'], ['my.handovers'], ['my.orders']];
+    if (App.user && App.user.role === 'admin') list = list.concat([['admin.overview'], ['admin.approvals'], ['admin.items']]);
+    setTimeout(function () { API.prefetch(list); }, 300);
+  }
 
   // ---------- hub: all team apps ----------
   function renderHub() {
@@ -206,7 +240,7 @@ var App = (function () {
     API.call('auth.google', { credential: credential, app: App.mode }).then(function (d) {
       App.settings = d.settings || App.settings;
       if (d.pending) { pendingUser = d.user; renderLogin(); return; }
-      API.setToken(d.token); App.user = d.user; App.go(App.mode === 'admin' ? 'a-home' : 'hub', true);
+      API.setToken(d.token); App.user = d.user; App.go(App.mode === 'admin' ? 'a-home' : 'hub', true); warm();
     }, function (e) { loginError = e.message; renderLogin(); });
   }
   API.onAuthLost(function (msg) { App.user = null; UI.closeAll(); loginError = msg || ''; renderLogin(); });
@@ -256,6 +290,7 @@ var App = (function () {
       if (App.mode === 'admin' && d.user.role !== 'admin') { App.user = null; loginError = 'This account is not an admin.'; return renderLogin(); }
       var r = ''; try { r = location.hash.slice(1); } catch (e) { r = ''; }
       App.go(r || entryRoute(), true);
+      warm();
     }, function (e) { if (e.code !== 'AUTH') { loginError = e.message; renderLogin(); } });
   };
   return App;

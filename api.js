@@ -63,7 +63,8 @@ var API = (function () {
 
   function sleep(ms) { return new Promise(function (r) { setTimeout(r, ms); }); }
 
-  function call(action, payload) {
+  // One trip to the backend (or the local demo backend).
+  function net(action, payload, fresh) {
     if (DEMO) {
       if (!io) demoBoot();
       return sleep(120 + Math.random() * 180).then(function () {
@@ -74,20 +75,110 @@ var API = (function () {
         } catch (e) { return fail(e.isApp ? e.message : 'Something went wrong: ' + e.message, e.code); }
       });
     }
-    return fetch(cfg.API_URL, { method: 'POST', headers: { 'Content-Type': 'text/plain;charset=utf-8' }, body: JSON.stringify({ action: action, payload: payload || {}, token: token }) })
-      .then(function (r) { if (!r.ok) throw new Error('HTTP ' + r.status); return r.json(); }, function () { return fail('No connection. Check your internet and try again.', 'NETWORK'); })
-      .then(function (j) { if (!j.ok) return fail(j.error || 'Something went wrong.', j.code); return j.data; }, function (e) { if (e.code) throw e; return fail('The server did not answer properly. Try again in a moment.', 'SERVER'); });
+    var body = { action: action, payload: payload || {}, token: token };
+    if (fresh) body.fresh = true;
+    return post(body).then(function (j) { if (!j.ok) return fail(j.error || 'Something went wrong.', j.code); return j.data; });
   }
+  function post(body) {
+    return fetch(cfg.API_URL, { method: 'POST', headers: { 'Content-Type': 'text/plain;charset=utf-8' }, body: JSON.stringify(body) })
+      .then(function (r) { if (!r.ok) throw new Error('HTTP ' + r.status); return r.json(); }, function () { return fail('No connection. Check your internet and try again.', 'NETWORK'); })
+      .then(null, function (e) { if (e.code) throw e; return fail('The server did not answer properly. Try again in a moment.', 'SERVER'); });
+  }
+
+  // ---------------- read cache: pages open instantly with the last data, then update quietly ----------------
+  var RC_KEY = 'mg_rc_v1', FRESH_MS = 20000, MAX_SAVE = 400000;
+  var rc = {}, inflight = {}, used = {}, freshUntil = 0, gen = 0, onUpdate = function () {}, saveTimer = null;
+  var NO_SAVE = { 'admin.log': 1 };
+  (function loadRC() {
+    try { var o = JSON.parse(Store.get(RC_KEY) || 'null'); if (o && o.tok && o.tok === tag(token)) rc = o.e || {}; } catch (e) { rc = {}; }
+  })();
+  function tag(t) { return t ? String(t).slice(-12) : ''; }
+  function rkey(action, payload) { return action + '|' + JSON.stringify(payload || {}); }
+  function saveRC() {
+    clearTimeout(saveTimer);
+    saveTimer = setTimeout(function () {
+      if (!token) { Store.set(RC_KEY, null); return; }
+      var e = {}, size = 0;
+      Object.keys(rc).sort(function (a, b) { return rc[b].t - rc[a].t; }).forEach(function (k) {
+        if (NO_SAVE[k.split('|')[0]] || size + rc[k].s.length > MAX_SAVE) return;
+        e[k] = rc[k]; size += rc[k].s.length;
+      });
+      Store.set(RC_KEY, JSON.stringify({ tok: tag(token), e: e }));
+    }, 400);
+  }
+  function put(k, data) {
+    var s = JSON.stringify(data), prev = rc[k];
+    rc[k] = { s: s, t: Date.now() };
+    saveRC();
+    return !prev || prev.s !== s;
+  }
+  function staleAll() { gen++; inflight = {}; Object.keys(rc).forEach(function (k) { rc[k].stale = true; }); saveRC(); }
+  function clearRC() { gen++; rc = {}; inflight = {}; Store.set(RC_KEY, null); }
+  function revalidate(action, payload, k) {
+    if (inflight[k]) return inflight[k];
+    var g = gen;
+    var p = net(action, payload, false).then(function (d) {
+      if (inflight[k] === p) delete inflight[k];
+      if (g === gen && put(k, d) && used[k]) onUpdate(k);
+      return d;
+    }, function (e) { if (inflight[k] === p) delete inflight[k]; throw e; });
+    inflight[k] = p;
+    return p;
+  }
+
+  function call(action, payload) {
+    if (!Logic.isRead(action)) {
+      return net(action, payload, false).then(function (d) {
+        if (action === 'auth.google' || action === 'auth.logout') clearRC(); else staleAll();
+        return d;
+      });
+    }
+    var k = rkey(action, payload), hit = rc[k], fresh = Date.now() < freshUntil;
+    used[k] = true;
+    if (hit && !hit.stale && !fresh) {
+      if (Date.now() - hit.t > FRESH_MS) revalidate(action, payload, k).catch(function () {});
+      return Promise.resolve(JSON.parse(hit.s));
+    }
+    if (!fresh && inflight[k]) return inflight[k].then(function (d) { return JSON.parse(JSON.stringify(d)); });
+    var g = gen;
+    return net(action, payload, fresh).then(function (d) { if (g === gen) put(k, d); return d; });
+  }
+
+  /** Load several pages' data in one trip, in the background. */
+  function prefetch(list) {
+    var need = list.filter(function (x) {
+      var k = rkey(x[0], x[1]), hit = rc[k];
+      return !inflight[k] && (!hit || hit.stale || Date.now() - hit.t > FRESH_MS);
+    });
+    if (!need.length || !token) return Promise.resolve();
+    if (DEMO) return Promise.all(need.map(function (x) { return revalidate(x[0], x[1], rkey(x[0], x[1])).catch(function () {}); }));
+    var tok = token, g = gen;
+    return post({ batch: need.map(function (x) { return { action: x[0], payload: x[1] || {} }; }), token: token }).then(function (j) {
+      if (!j.ok || tok !== token || g !== gen) return;
+      j.data.forEach(function (r, i) {
+        if (!r.ok) return;
+        var k = rkey(need[i][0], need[i][1]);
+        if (put(k, r.data) && used[k]) onUpdate(k);
+      });
+    }).catch(function () {});
+  }
+
   function fail(msg, code) {
     var e = new Error(msg); e.code = code || 'ERROR';
     if (code === 'AUTH' && token) { setToken(''); setTimeout(function () { onAuthLost(msg); }, 0); }
     throw e;
   }
-  function setToken(t) { token = t || ''; Store.set('mg_token', token || null); }
+  function setToken(t) { if ((t || '') !== token) clearRC(); token = t || ''; Store.set('mg_token', token || null); }
 
   return {
-    DEMO: DEMO, call: call, setToken: setToken, hasToken: function () { return !!token; },
+    DEMO: DEMO, call: call, prefetch: prefetch, setToken: setToken, hasToken: function () { return !!token; },
     onAuthLost: function (fn) { onAuthLost = fn; },
-    resetDemo: function () { Store.set(DEMO_KEY, null); mem = null; io = null; setToken(''); }
+    /** Called when a page's data changed after it was shown from the cache. */
+    onUpdate: function (fn) { onUpdate = fn; },
+    /** A new page is being drawn: only its own data counts for quiet updates. */
+    newPage: function () { used = {}; },
+    /** Refresh button: skip the cache (phone and server) for the next few seconds. */
+    freshen: function () { freshUntil = Date.now() + 6000; staleAll(); },
+    resetDemo: function () { Store.set(DEMO_KEY, null); mem = null; io = null; setToken(''); clearRC(); }
   };
 })();

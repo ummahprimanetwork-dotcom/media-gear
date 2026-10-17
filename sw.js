@@ -1,5 +1,5 @@
 /* Offline shell: the app opens even with a weak signal. Data always comes live from the backend. */
-var VERSION = 'upn-0.9.0'; // bump with each release so phones fetch the new files
+var VERSION = 'upn-0.9.1'; // bump with each release so phones fetch the new files
 var SHELL = ['./', 'index.html', 'admin.html', 'styles.css', 'config.js', 'logic.js', 'memdb.js', 'ui.js', 'api.js', 'app.js', 'user.js', 'admin.js',
   'manifest.webmanifest', 'manifest-admin.webmanifest', 'icons/icon-192.png', 'icons/admin-192.png'];
 self.addEventListener('install', function (e) { e.waitUntil(caches.open(VERSION).then(function (c) { return c.addAll(SHELL); }).then(function () { return self.skipWaiting(); })); });
