@@ -4,10 +4,10 @@
    ================================================================ */
 window.APP_CONFIG = {
   // Apps Script → Deploy → Web app URL (ends with /exec)
-  API_URL: '',
+  API_URL: 'https://script.google.com/macros/s/AKfycbyFr_irLrB6ZaqXaFgVSIqWg94bDGGT0FjxVSfHAURUBVO_-tPnD_dm2_nLV8GuvsQM/exec',
 
   // Google Cloud Console → Credentials → OAuth client ID (same one as in Code.gs)
-  GOOGLE_CLIENT_ID: '',
+  GOOGLE_CLIENT_ID: '525358009353-lm62md47uve4nktb3a564aeo5d4lv4ki.apps.googleusercontent.com',
 
   // Shown on the sign-in screen before anyone logs in. After sign-in, the names in the App Settings sheet are used.
   APP_NAME: 'Media Gear',
