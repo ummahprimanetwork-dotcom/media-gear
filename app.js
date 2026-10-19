@@ -130,8 +130,7 @@ var App = (function () {
       }).join('') +
       (soon.length ? '<div class="group-h">' + I('clock') + 'Coming soon</div><div class="soon-grid">' + soon.map(function (a) {
         return '<button class="app-card soon" data-act="soon-app" data-name="' + E(a.name) + '"><span class="app-ic">' + I(a.icon || 'box') + '</span>' +
-          '<span class="app-name">' + E(a.name) + '</span><span class="app-desc">' + E(a.desc || '') + '</span>' +
-          (a.note ? '<span class="app-note">' + I('star') + '<span>' + E(a.note) + '</span></span>' : '') + '<span class="pill p-mute">Coming soon</span></button>';
+          '<span class="app-name">' + E(a.name) + '</span></button>';
       }).join('') + '</div>' : '') +
       '<footer class="hub-foot"><div class="hub-mark sm" aria-hidden="true"><span></span><span></span><span></span><span></span></div>' +
       '<div><b>' + E(HUB) + '</b> · v' + E(CFG.VERSION || '0.9.0') + ' ' + E(CFG.VERSION_LABEL || 'Beta') + (CFG.VERSION_NAME ? ' “' + E(CFG.VERSION_NAME) + '”' : '') + '</div>' +

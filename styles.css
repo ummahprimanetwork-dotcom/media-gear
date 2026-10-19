@@ -538,14 +538,11 @@ button.stat { border: 0; text-align: left; }
 .app-admin span:first-of-type { flex: 1; }
 .app-badge { min-width: 22px; height: 22px; border-radius: 11px; padding: 0 7px; background: var(--accent); color: #fff; font: 700 12px/22px var(--f-body); text-align: center; }
 
-.soon-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
-.soon-grid > :last-child:nth-child(odd) { grid-column: 1 / -1; }
-.app-card.soon { display: grid; justify-items: start; gap: 6px; padding: 14px; border: 0; text-align: left; box-shadow: none; background: var(--surface); outline: 1.5px dashed var(--line); outline-offset: -1.5px; }
+.soon-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; }
+.app-card.soon { display: grid; justify-items: center; align-content: start; gap: 8px; padding: 14px 6px; border: 0; text-align: center; box-shadow: none; background: var(--surface); outline: 1.5px dashed var(--line); outline-offset: -1.5px; }
 .app-card.soon .app-ic { width: 44px; height: 44px; border-radius: 12px; background: var(--surface-2); color: var(--ink-2); }
 .app-card.soon .app-ic svg { width: 22px; height: 22px; }
-.app-card.soon .app-name { font-size: 18px; color: var(--ink-2); }
-.app-card.soon .app-desc { font-size: 12.5px; margin: 0; }
-.app-card.soon .pill { margin-top: 4px; }
+.app-card.soon .app-name { font-size: 12.5px; line-height: 1.15; letter-spacing: .01em; color: var(--ink-2); }
 .vf-title.hub-title { font-size: clamp(30px, 9.5vw, 42px); }
 
 .app-stats span { white-space: nowrap; }
@@ -558,9 +555,6 @@ button.stat { border: 0; text-align: left; }
 .hub-mark.sm { grid-template-columns: repeat(2, 8px); gap: 2px; margin-bottom: 4px; }
 .hub-mark.sm span { width: 8px; height: 8px; border-radius: 2px; background: var(--ink); }
 .hub-mark.sm span:nth-child(2) { background: var(--accent); border-radius: 50%; }
-.soon-grid { align-items: start; }
-.app-card.soon { align-content: start; }
-.app-card.soon .pill { justify-self: start; }
 
 .app-group { display: block; font: 700 11px/1 var(--f-mono); letter-spacing: .14em; text-transform: uppercase; color: var(--accent); margin-bottom: 5px; }
 
