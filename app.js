@@ -9,7 +9,7 @@ var App = (function () {
     user: [['home', 'board', 'Dashboard'], ['pick', 'cart', 'Gear'], ['profile', 'user', 'Profile']],
     admin: [['a-home', 'board', 'Overview'], ['a-approvals', 'inbox', 'Approvals'], ['a-orders', 'receipt', 'Orders'], ['a-items', 'box', 'Items'], ['a-more', 'more', 'More']]
   };
-  var NAV_PARENT = { mine: 'profile', cart: 'pick', photo: 'pick', done: 'pick', 'a-order': 'a-orders', 'a-item': 'a-items', 'a-users': 'a-more', 'a-presets': 'a-more', 'a-cats': 'a-more', 'a-settings': 'a-more', 'a-log': 'a-more' };
+  var NAV_PARENT = { mine: 'profile', cart: 'pick', photo: 'pick', done: 'pick', 'a-order': 'a-orders', 'a-item': 'a-items', 'a-users': 'a-more', 'a-presets': 'a-items', 'a-preset': 'a-items', 'a-cats': 'a-more', 'a-settings': 'a-more', 'a-log': 'a-more' };
   var root = document.getElementById('app');
 
   // ---------- clicks: data-act="name" ----------

@@ -21,7 +21,7 @@ var Logic = (function () {
     OrderLines: ['id', 'order_id', 'item_id', 'item_name', 'category_id', 'qty', 'status', 'out_at', 'return_requested_at', 'return_note', 'return_photo', 'returned_at', 'return_condition', 'return_remark', 'approved_by'],
     Settings: ['key', 'value', 'description'],
     Log: ['date', 'email', 'action', 'detail'],
-    Presets: ['id', 'name', 'scope', 'owner_email', 'owner_name', 'items', 'status', 'created_at', 'updated_at'],
+    Presets: ['id', 'name', 'scope', 'owner_email', 'owner_name', 'items', 'status', 'created_at', 'updated_at', 'users'],
     PhotoLinks: ['item_id', 'code', 'name', 'image_url', 'search', 'source', 'updated_at'],
     Handovers: ['id', 'item_id', 'item_name', 'qty', 'from_line_id', 'from_order_id', 'from_email', 'from_name', 'to_email', 'to_name', 'purpose', 'expected_return', 'note', 'status', 'created_at', 'decided_at', 'decided_by', 'new_order_id', 'to_order_id']
   };
@@ -112,10 +112,11 @@ var Logic = (function () {
     this.now = io.env.fmt(this.nowDate);
     this.today = this.now.slice(0, 10);
     this.user = null;
+    this.reads = {}; this.changed = {}; // which tables this action looked at / changed (lets the phone refresh only what is affected)
   }
-  Ctx.prototype.all = function (t) { return this.db.all(t); };
-  Ctx.prototype.ins = function (t, o) { var row = {}; SCHEMA[t].forEach(function (c) { row[c] = o[c] === undefined ? '' : o[c]; }); return this.db.insert(t, row); };
-  Ctx.prototype.upd = function (t, row, patch) { return this.db.update(t, row, patch); };
+  Ctx.prototype.all = function (t) { this.reads[t] = 1; return this.db.all(t); };
+  Ctx.prototype.ins = function (t, o) { this.changed[t] = 1; var row = {}; SCHEMA[t].forEach(function (c) { row[c] = o[c] === undefined ? '' : o[c]; }); return this.db.insert(t, row); };
+  Ctx.prototype.upd = function (t, row, patch) { this.changed[t] = 1; return this.db.update(t, row, patch); };
   Ctx.prototype.log = function (action, detail) {
     this.ins('Log', { date: this.now, email: this.user ? this.user.email : '', action: action, detail: clip(detail, 500) });
   };
@@ -566,14 +567,21 @@ var Logic = (function () {
   A['admin.return.approve'] = function (c, p) {
     var o = adminOrder(c, p.order_id);
     var items = itemMap(c);
-    var want = {};
+    var want = {}, keep = {};
     (p.lines || []).forEach(function (x) { want[S(x.line_id)] = x; });
+    // Items the user asked to return but did not actually bring back: they stay with the user.
+    (p.not_returned || []).forEach(function (x) { var id = S(x.line_id || x); if (!want[id]) keep[id] = x; });
     var lines = linesOf(c, o.id).filter(function (l) { return want[S(l.id)] && ['OUT', 'RETURN_REQUESTED'].indexOf(S(l.status)) >= 0; });
-    if (!lines.length) fail('Choose at least one item that is still out.');
+    var kept = linesOf(c, o.id).filter(function (l) { return keep[S(l.id)] && S(l.status) === 'RETURN_REQUESTED'; });
+    if (!lines.length && !kept.length) fail('Choose at least one item that is still out.');
     lines.forEach(function (l) {
       var x = want[S(l.id)];
       var cd = CONDITIONS.indexOf(S(x.condition)) >= 0 ? S(x.condition) : 'Good';
       if (cd !== 'Good' && !S(x.remark).trim()) fail('Write a note for ' + S(l.item_name) + ' (' + cd + '), e.g. what is missing or broken.');
+    });
+    kept.forEach(function (l) {
+      var note = clip(keep[S(l.id)].note, 300);
+      c.upd('OrderLines', l, { status: 'OUT', return_requested_at: '', return_remark: 'Not returned yet (checked by ' + c.user.name + ')' + (note ? ': ' + note : '') });
     });
     cancelHandoversFor(c, lines.map(function (l) { return S(l.id); }), 'returned to store');
     lines.forEach(function (l) {
@@ -591,8 +599,9 @@ var Logic = (function () {
       }
     });
     refreshOrder(c, o);
-    c.log('order.return_approve', o.id + ': ' + lines.map(function (l) { return l.item_name + ' (' + (want[S(l.id)].condition || 'Good') + ')'; }).join(', '));
-    return { order: pubOrder(c, o, true) };
+    c.log('order.return_approve', o.id + ': ' + (lines.length ? lines.map(function (l) { return l.item_name + ' (' + (want[S(l.id)].condition || 'Good') + ')'; }).join(', ') : 'nothing returned') +
+      (kept.length ? '; still with ' + o.name + ': ' + kept.map(function (l) { return l.item_name; }).join(', ') : ''));
+    return { order: pubOrder(c, o, true), returned: lines.length, kept: kept.length };
   };
   A['admin.return.reject'] = function (c, p) {
     var o = adminOrder(c, p.order_id);
@@ -795,22 +804,26 @@ var Logic = (function () {
       return r;
     });
     return {
-      id: S(p.id), name: S(p.name), scope: S(p.scope) || 'personal', owner_name: S(p.owner_name), mine: lower(p.owner_email) === c.user.email,
+      id: S(p.id), name: S(p.name), scope: S(p.scope) || 'personal', owner_name: S(p.owner_name), mine: lower(p.owner_email) === c.user.email, users: presetUsers(p),
       items: rows, ready: rows.length > 0 && rows.every(function (r) { return r.ok; }), blocked: rows.filter(function (r) { return !r.ok; }).length,
       takes: rows.filter(function (r) { return r.state === 'take'; }).length, updated_at: S(p.updated_at)
     };
   }
+  /** Team preset audience: empty list = everyone. */
+  function presetUsers(p) { return S(p.users).split(/[,;\s]+/).map(lower).filter(function (e) { return e.indexOf('@') > 0; }); }
+  function presetFor(c, p) { var u = presetUsers(p); return !u.length || u.indexOf(c.user.email) >= 0; }
   function findPreset(c, id) { var p = c.all('Presets').filter(function (x) { return S(x.id) === S(id) && S(x.status) !== 'archived'; })[0]; if (!p) fail('Preset not found.', 'NOT_FOUND'); return p; }
   function canEditPreset(c, p) {
     if (S(p.scope) === 'team') return c.user.role === 'admin';
     return lower(p.owner_email) === c.user.email;
   }
-  A['presets'] = function (c) {
+  A['presets'] = function (c, p) {
     var items = itemMap(c), used = usedQty(c), hm = holdersMap(c);
-    var live = c.all('Presets').filter(function (p) { return S(p.status) !== 'archived'; }).sort(by('name'));
+    var all = !!(p && p.all) && c.user.role === 'admin'; // admin preset manager sees every team preset
+    var live = c.all('Presets').filter(function (x) { return S(x.status) !== 'archived'; }).sort(by('name'));
     return {
-      mine: live.filter(function (p) { return S(p.scope) !== 'team' && lower(p.owner_email) === c.user.email; }).map(function (p) { return presetView(c, p, items, used, hm); }),
-      team: live.filter(function (p) { return S(p.scope) === 'team'; }).map(function (p) { return presetView(c, p, items, used, hm); })
+      mine: live.filter(function (x) { return S(x.scope) !== 'team' && lower(x.owner_email) === c.user.email; }).map(function (x) { return presetView(c, x, items, used, hm); }),
+      team: live.filter(function (x) { return S(x.scope) === 'team' && (all || presetFor(c, x)); }).map(function (x) { return presetView(c, x, items, used, hm); })
     };
   };
   A['preset.save'] = function (c, p) {
@@ -827,18 +840,27 @@ var Logic = (function () {
     });
     if (!order.length) fail('Add at least one item to the preset.');
     var json = JSON.stringify(order.map(function (id) { return { item_id: id, qty: merged[id], name: S(items[id].name) }; }));
+    // Team presets can be for everyone (empty) or for chosen people only.
+    var users = '';
+    if (scope === 'team' && p.users && p.users.length) {
+      var known = {}; c.all('Users').forEach(function (u) { known[lower(u.email)] = 1; });
+      users = p.users.map(lower).filter(function (e, i, a) { return known[e] && a.indexOf(e) === i; }).join(', ');
+      if (!users) fail('Choose at least one person, or pick "All users".');
+    }
     var row;
     if (p.id) {
       row = findPreset(c, p.id);
       if (!canEditPreset(c, row)) fail('You cannot change this preset.', 'FORBIDDEN');
-      c.upd('Presets', row, { name: name, items: json, updated_at: c.now });
+      var patch = { name: name, items: json, updated_at: c.now };
+      if (S(row.scope) === 'team') patch.users = users;
+      c.upd('Presets', row, patch);
     } else {
       var mine = c.all('Presets').filter(function (x) { return S(x.status) !== 'archived' && S(x.scope) !== 'team' && lower(x.owner_email) === c.user.email; });
       if (scope === 'personal' && mine.length >= 30) fail('You already have 30 presets. Delete one first.');
       if (c.all('Presets').some(function (x) { return S(x.status) !== 'archived' && S(x.scope) === scope && lower(x.name) === lower(name) && (scope === 'team' || lower(x.owner_email) === c.user.email); })) fail('You already have a preset called "' + name + '".');
-      row = c.ins('Presets', { id: c.id('PR'), name: name, scope: scope, owner_email: c.user.email, owner_name: c.user.name, items: json, status: 'active', created_at: c.now, updated_at: c.now });
+      row = c.ins('Presets', { id: c.id('PR'), name: name, scope: scope, owner_email: c.user.email, owner_name: c.user.name, items: json, status: 'active', created_at: c.now, updated_at: c.now, users: users });
     }
-    c.log('preset.save', (scope === 'team' ? 'team: ' : '') + name + ' (' + order.length + ' items)');
+    c.log('preset.save', (scope === 'team' ? 'team: ' : '') + name + ' (' + order.length + ' items' + (users ? ', for ' + users : '') + ')');
     return { preset: presetView(c, row, items, usedQty(c)) };
   };
   A['preset.delete'] = function (c, p) {
@@ -948,12 +970,17 @@ var Logic = (function () {
   var PUBLIC = ['auth.google'];
   var READS = ['auth.me', 'board', 'catalog', 'presets', 'my.handovers', 'my.orders', 'admin.overview', 'admin.approvals', 'admin.orders', 'admin.order', 'admin.items', 'admin.item', 'admin.users', 'admin.settings', 'admin.log'];
 
-  function run(action, payload, io, token) {
+  /** meta (optional): filled with { reads: [tables], changed: [tables] } even when the action fails. */
+  function run(action, payload, io, token, meta) {
     var fn = A[action];
     if (!fn) fail('Unknown action: ' + action, 'NOT_FOUND');
     var c = new Ctx(io, token);
-    if (PUBLIC.indexOf(action) < 0) requireSession(c, action.indexOf('admin.') === 0);
-    return fn(c, payload || {});
+    try {
+      if (PUBLIC.indexOf(action) < 0) requireSession(c, action.indexOf('admin.') === 0);
+      return fn(c, payload || {});
+    } finally {
+      if (meta) { meta.reads = Object.keys(c.reads); meta.changed = Object.keys(c.changed); }
+    }
   }
 
   /** Fill empty tables with the starting data. Safe to run more than once. */

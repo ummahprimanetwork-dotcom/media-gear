@@ -64,20 +64,29 @@ var API = (function () {
   function sleep(ms) { return new Promise(function (r) { setTimeout(r, ms); }); }
 
   // One trip to the backend (or the local demo backend).
+  // Resolves { data, reads, changed }: reads/changed = the tables the action looked at / changed
+  // (missing when talking to an older backend).
   function net(action, payload, fresh) {
     if (DEMO) {
       if (!io) demoBoot();
       return sleep(120 + Math.random() * 180).then(function () {
+        var meta = {};
         try {
-          var data = Logic.run(action, payload || {}, io, token);
+          var data = Logic.run(action, payload || {}, io, token, meta);
           if (!Logic.isRead(action)) persist();
-          return JSON.parse(JSON.stringify(data));
-        } catch (e) { return fail(e.isApp ? e.message : 'Something went wrong: ' + e.message, e.code); }
+          return { data: JSON.parse(JSON.stringify(data)), reads: meta.reads, changed: meta.changed };
+        } catch (e) {
+          if (meta.changed && meta.changed.length) { persist(); invalidate(meta.changed); }
+          return fail(e.isApp ? e.message : 'Something went wrong: ' + e.message, e.code);
+        }
       });
     }
     var body = { action: action, payload: payload || {}, token: token };
     if (fresh) body.fresh = true;
-    return post(body).then(function (j) { if (!j.ok) return fail(j.error || 'Something went wrong.', j.code); return j.data; });
+    return post(body).then(function (j) {
+      if (!j.ok) { if (j.changed && j.changed.length) invalidate(j.changed); return fail(j.error || 'Something went wrong.', j.code); }
+      return { data: j.data, reads: j.reads, changed: j.changed };
+    });
   }
   function post(body) {
     return fetch(cfg.API_URL, { method: 'POST', headers: { 'Content-Type': 'text/plain;charset=utf-8' }, body: JSON.stringify(body) })
@@ -86,7 +95,7 @@ var API = (function () {
   }
 
   // ---------------- read cache: pages open instantly with the last data, then update quietly ----------------
-  var RC_KEY = 'mg_rc_v1', FRESH_MS = 20000, MAX_SAVE = 400000;
+  var RC_KEY = 'mg_rc_v2', FRESH_MS = 20000, MAX_SAVE = 400000;
   var rc = {}, inflight = {}, used = {}, freshUntil = 0, gen = 0, onUpdate = function () {}, saveTimer = null;
   var NO_SAVE = { 'admin.log': 1 };
   (function loadRC() {
@@ -106,21 +115,36 @@ var API = (function () {
       Store.set(RC_KEY, JSON.stringify({ tok: tag(token), e: e }));
     }, 400);
   }
-  function put(k, data) {
+  function put(k, data, reads) {
     var s = JSON.stringify(data), prev = rc[k];
     rc[k] = { s: s, t: Date.now() };
+    if (reads) rc[k].d = reads.filter(function (t) { return !IGNORE[t]; });
     saveRC();
     return !prev || prev.s !== s;
+  }
+  // Sign-in bookkeeping changes on every request; it never changes what a page shows.
+  var IGNORE = { Sessions: 1 };
+  /** A save changed these tables: only pages that read one of them need fresh data. */
+  function invalidate(changed) {
+    if (!changed) return staleAll();
+    var ch = changed.filter(function (t) { return !IGNORE[t]; });
+    if (!ch.length) return;
+    gen++; inflight = {};
+    Object.keys(rc).forEach(function (k) {
+      var d = rc[k].d;
+      if (!d || d.some(function (t) { return ch.indexOf(t) >= 0; })) rc[k].stale = true;
+    });
+    saveRC();
   }
   function staleAll() { gen++; inflight = {}; Object.keys(rc).forEach(function (k) { rc[k].stale = true; }); saveRC(); }
   function clearRC() { gen++; rc = {}; inflight = {}; Store.set(RC_KEY, null); }
   function revalidate(action, payload, k) {
     if (inflight[k]) return inflight[k];
     var g = gen;
-    var p = net(action, payload, false).then(function (d) {
+    var p = net(action, payload, false).then(function (r) {
       if (inflight[k] === p) delete inflight[k];
-      if (g === gen && put(k, d) && used[k]) onUpdate(k);
-      return d;
+      if (g === gen && put(k, r.data, r.reads) && used[k]) onUpdate(k);
+      return r.data;
     }, function (e) { if (inflight[k] === p) delete inflight[k]; throw e; });
     inflight[k] = p;
     return p;
@@ -128,9 +152,9 @@ var API = (function () {
 
   function call(action, payload) {
     if (!Logic.isRead(action)) {
-      return net(action, payload, false).then(function (d) {
-        if (action === 'auth.google' || action === 'auth.logout') clearRC(); else staleAll();
-        return d;
+      return net(action, payload, false).then(function (r) {
+        if (action === 'auth.google' || action === 'auth.logout') clearRC(); else invalidate(r.changed);
+        return r.data;
       });
     }
     var k = rkey(action, payload), hit = rc[k], fresh = Date.now() < freshUntil;
@@ -141,7 +165,7 @@ var API = (function () {
     }
     if (!fresh && inflight[k]) return inflight[k].then(function (d) { return JSON.parse(JSON.stringify(d)); });
     var g = gen;
-    return net(action, payload, fresh).then(function (d) { if (g === gen) put(k, d); return d; });
+    return net(action, payload, fresh).then(function (r) { if (g === gen) put(k, r.data, r.reads); return r.data; });
   }
 
   /** Load several pages' data in one trip, in the background. */
@@ -158,7 +182,7 @@ var API = (function () {
       j.data.forEach(function (r, i) {
         if (!r.ok) return;
         var k = rkey(need[i][0], need[i][1]);
-        if (put(k, r.data) && used[k]) onUpdate(k);
+        if (put(k, r.data, r.reads) && used[k]) onUpdate(k);
       });
     }).catch(function () {});
   }

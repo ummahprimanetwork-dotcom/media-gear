@@ -65,9 +65,18 @@
         tab: function (el) { tab = el.getAttribute('data-id'); draw(d); },
         'r-ok': function (el) {
           var o = find(d.returns, el.getAttribute('data-id'));
-          var lines = readCond(main, o.lines.filter(function (l) { return l.status === 'RETURN_REQUESTED'; }), function (l) { return 'r' + l.id; });
+          var req = o.lines.filter(function (l) { return l.status === 'RETURN_REQUESTED'; });
+          var back = req.filter(function (l) { return isBack(main, l.id); });
+          var kept = req.filter(function (l) { return !isBack(main, l.id); }).map(function (l) {
+            var n = main.querySelector('[data-keep-note="' + l.id + '"]'); return { line_id: l.id, note: n ? n.value.trim() : '' };
+          });
+          var lines = readCond(main, back, function (l) { return 'r' + l.id; });
           if (!lines) return;
-          App.run(el, 'admin.return.approve', { order_id: o.id, lines: lines }).then(function (r) { if (r) { UI.toast('Return approved. Dashboard updated.'); reload(); } });
+          App.run(el, 'admin.return.approve', { order_id: o.id, lines: lines, not_returned: kept }).then(function (r) {
+            if (!r) return;
+            UI.toast(r.kept ? (r.returned ? r.returned + ' returned · ' : '') + r.kept + ' still with ' + o.name : 'Return approved. Dashboard updated.');
+            reload();
+          });
         },
         'r-no': function (el) {
           var id = el.getAttribute('data-id');
@@ -88,10 +97,27 @@
         'u-no': function (el) { App.run(el, 'admin.user.save', { email: el.getAttribute('data-id'), role: 'user', status: 'disabled' }).then(function (r) { if (r) { UI.toast('Declined'); reload(); } }); }
       };
       wireCond(main);
+      wireReturn(main, d.returns);
     }
     function reload() { API.call('admin.approvals').then(draw, App.error); }
     return API.call('admin.approvals').then(draw);
   };
+  function isBack(root, lineId) { var c = root.querySelector('[data-back="' + lineId + '"]'); return !c || c.checked; }
+  /* Returned on/off per item: off = the user still has it, no condition needed. */
+  function wireReturn(root, orders) {
+    root.querySelectorAll('[data-back]').forEach(function (cb) {
+      cb.addEventListener('change', function () {
+        var box = cb.closest('.rline');
+        box.querySelector('.rl-yes').hidden = !cb.checked;
+        box.querySelector('.rl-no').hidden = cb.checked;
+        box.classList.toggle('kept', !cb.checked);
+        var card = cb.closest('.order'), o = find(orders, card.getAttribute('data-order'));
+        var all = card.querySelectorAll('[data-back]'), on = card.querySelectorAll('[data-back]:checked').length, off = all.length - on;
+        var btn = card.querySelector('[data-act="r-ok"] span');
+        btn.textContent = !off ? 'Approve return' : !on ? 'Confirm: still with ' + o.name.split(' ')[0] : 'Confirm ' + on + ' returned · ' + off + ' kept';
+      });
+    });
+  }
   function find(list, id) { return list.filter(function (o) { return o.id === id; })[0]; }
   var RETURN_CONDS = [['Good', 'All OK'], ['Fair', 'Worn, works fine'], ['Incomplete', 'Part missing'], ['Damaged', 'Broken / faulty'], ['Lost', 'Not returned']];
   var QUICK_NOTES = {
@@ -149,16 +175,22 @@
     var photos = []; req.forEach(function (l) { if (l.return_photo && photos.indexOf(l.return_photo) < 0) photos.push(l.return_photo); });
     var note = req.map(function (l) { return l.return_note; }).filter(Boolean)[0];
     var still = o.lines.filter(function (l) { return l.status === 'OUT'; }).length;
-    return '<div class="order"><div class="order-h"><div class="grow stack-sm"><div class="row wrap"><b>' + E(o.name) + '</b><span class="tape">' + E(o.id) + '</span></div>' +
+    var first = E(o.name.split(' ')[0]);
+    return '<div class="order" data-order="' + E(o.id) + '"><div class="order-h"><div class="grow stack-sm"><div class="row wrap"><b>' + E(o.name) + '</b><span class="tape">' + E(o.id) + '</span></div>' +
       '<div class="small muted">Requested ' + E(UI.when(req[0].return_requested_at)) + ' · taken ' + E(UI.when(o.created_at)) + (o.purpose ? ' · ' + E(o.purpose) : '') + '</div></div>' +
       '<button class="icon-btn" data-act="go" data-to="a-order/' + E(o.id) + '" aria-label="Open order">' + I('right') + '</button></div>' +
       (note ? '<div style="padding:10px 14px 0"><div class="notice info">' + I('note') + '<div><b>User note:</b> ' + E(note) + '</div></div></div>' : '') +
       (photos.length ? '<div style="padding:10px 14px 0">' + UI.photos(photos) + '</div>' : '') +
+      (req.length > 1 ? '<div class="small muted" style="padding:10px 14px 0">Untick anything that did not actually come back. It stays with ' + first + '.</div>' : '') +
       '<div class="order-b">' + req.map(function (l) {
-        return '<div style="padding:12px 14px" class="stack-sm"><div class="row between"><b>' + E(l.item_name) + (l.qty > 1 ? ' ×' + l.qty : '') + '</b><span class="small muted">Condition on return</span></div>' + condBlock('r' + l.id) + '</div>';
+        return '<div style="padding:12px 14px" class="stack-sm rline"><div class="row between"><b class="grow">' + E(l.item_name) + (l.qty > 1 ? ' ×' + l.qty : '') + '</b>' +
+          '<label class="rtoggle"><span>Returned</span><span class="switch"><input type="checkbox" checked data-back="' + E(l.id) + '" aria-label="' + E(l.item_name) + ' returned"><i></i></span></label></div>' +
+          '<div class="rl-yes">' + condBlock('r' + l.id) + '</div>' +
+          '<div class="rl-no stack-sm" hidden><div class="notice warn">' + I('user') + '<div><b>Not returned.</b> Stays with ' + E(o.name) + ' and shows as Out again.</div></div>' +
+          '<input class="input" data-keep-note="' + E(l.id) + '" maxlength="300" placeholder="Note for ' + first + ' (optional), e.g. still at the venue"></div></div>';
       }).join('') + '</div>' +
       (still ? '<div class="small muted" style="padding:0 14px 10px">' + still + ' more item' + (still > 1 ? 's' : '') + ' from this order still out.</div>' : '') +
-      '<div class="order-f"><button class="btn sm danger" data-act="r-no" data-id="' + E(o.id) + '">Reject</button><button class="btn sm ok grow" data-act="r-ok" data-id="' + E(o.id) + '">' + I('check') + 'Approve return</button></div></div>';
+      '<div class="order-f"><button class="btn sm danger" data-act="r-no" data-id="' + E(o.id) + '">Reject all</button><button class="btn sm ok grow" data-act="r-ok" data-id="' + E(o.id) + '">' + I('check') + '<span>Approve return</span></button></div></div>';
   }
   function checkoutCard(o) {
     return '<div class="order"><div class="order-h"><div class="grow stack-sm"><div class="row wrap"><b>' + E(o.name) + '</b><span class="tape">' + E(o.id) + '</span></div><div class="small muted">' + E(UI.when(o.created_at)) + (o.purpose ? ' · ' + E(o.purpose) : '') + (o.expected_return ? ' · back ' + E(UI.day(o.expected_return)) : '') + '</div></div></div>' +
@@ -305,7 +337,7 @@
       });
       var activeCats = d.categories.filter(function (c) { return c.status !== 'archived'; });
       var chip = function (id, label, icn) { return '<button class="chip" data-act="f" data-id="' + id + '" aria-pressed="' + (iFilter === id && !iQ) + '">' + (icn ? I(icn) : '') + E(label) + '</button>'; };
-      main.innerHTML = head('Items', d.items.filter(function (i) { return i.status !== 'archived'; }).length + ' on the list', '<button class="btn sm primary" data-act="new">' + I('plus') + 'Add item</button>') +
+      main.innerHTML = head('Items', d.items.filter(function (i) { return i.status !== 'archived'; }).length + ' on the list', '<div class="row" style="gap:8px;flex:none"><button class="btn sm ghost" data-act="go" data-to="a-presets">' + I('star') + 'Presets</button><button class="btn sm primary" data-act="new">' + I('plus') + 'Add item</button></div>') +
         '<div class="pick-bar"><label class="search">' + I('search') + '<input class="input" id="iq" type="search" placeholder="Search name, code, serial, remark" value="' + E(iQ) + '" aria-label="Search items"></label>' +
         '<div class="chips">' + chip('all', 'All') + chip('inuse', 'In use') + chip('attention', 'Needs attention', 'alert') + activeCats.map(function (c) { return chip(c.id, c.name, c.icon); }).join('') + chip('archived', 'Removed', 'trash') + '</div></div>' +
         (list.length ? '<div class="list">' + list.map(function (i) {
@@ -425,7 +457,6 @@
     var row = function (to, icn, t, sub) { return '<button class="li" data-act="go" data-to="' + to + '"><div class="thumb">' + I(icn) + '</div><div class="li-main"><div class="li-title">' + t + '</div><div class="li-sub">' + sub + '</div></div><span class="chev">' + I('right') + '</span></button>'; };
     main.innerHTML = head('More') + '<div class="list">' +
       row('a-users', 'users', 'Users', 'Approve, make admin, block') +
-      row('a-presets', 'star', 'Team presets', 'Ready-made gear sets everyone can use') +
       row('a-cats', 'folder', 'Categories', 'The tabs in the Gear screen') +
       row('a-settings', 'sliders', 'Settings & messages', 'Checkout message, switches, announcement') +
       row('a-log', 'list', 'Activity log', 'Everything that happened') +
@@ -574,63 +605,156 @@
     return API.call('admin.settings').then(draw);
   };
 
-  // =================== TEAM PRESETS ===================
+  // =================== TEAM PRESETS (from the Items page) ===================
+  function whoFor(p, names) {
+    if (!p.users || !p.users.length) return 'Everyone';
+    var n = p.users.map(function (e) { return names[e] || e.split('@')[0]; });
+    return n.length > 3 ? n.slice(0, 3).join(', ') + ' +' + (n.length - 3) : n.join(', ');
+  }
+  function userNames(users) { var m = {}; (users || []).forEach(function (u) { m[u.email] = u.name; }); return m; }
   V['a-presets'] = function (main) {
-    function draw(d) {
-      main.innerHTML = backHead('Team presets', 'Everyone sees these in Gear → Presets', 'a-more') +
-        '<button class="btn primary block" data-act="new" style="margin-bottom:14px">' + I('plus') + 'New team preset</button>' +
+    function draw(r) {
+      var d = r[0], names = userNames(r[1].users);
+      main.innerHTML = backHead('Team presets', 'Ready-made gear sets. They show in Gear → Presets.', 'a-items') +
+        '<button class="btn primary block" data-act="go" data-to="a-preset/new" style="margin-bottom:14px">' + I('plus') + 'New preset</button>' +
         (d.team.length ? '<div class="stack">' + d.team.map(function (p) {
-          return '<div class="preset"><div class="preset-h"><div class="grow" style="min-width:0"><div class="li-title">' + E(p.name) + '</div><div class="li-sub">' + p.items.length + ' items · by ' + E(p.owner_name) + '</div></div>' +
-            '<button class="icon-btn" data-act="edit" data-id="' + E(p.id) + '" aria-label="Edit">' + I('edit') + '</button><button class="icon-btn" data-act="del" data-id="' + E(p.id) + '" aria-label="Delete">' + I('trash') + '</button></div>' +
+          return '<div class="preset"><div class="preset-h"><div class="grow" style="min-width:0"><div class="li-title">' + E(p.name) + '</div><div class="li-sub">' + p.items.length + ' item' + (p.items.length > 1 ? 's' : '') + ' · for <b>' + E(whoFor(p, names)) + '</b></div></div>' +
+            '<button class="icon-btn" data-act="go" data-to="a-preset/' + E(p.id) + '" aria-label="Edit">' + I('edit') + '</button><button class="icon-btn" data-act="del" data-id="' + E(p.id) + '" aria-label="Delete">' + I('trash') + '</button></div>' +
             '<ul class="preset-items">' + p.items.map(function (x) { return '<li class="st-' + E(x.state || (x.ok ? 'free' : 'blocked')) + '"><span>' + E(x.name) + (x.qty > 1 ? ' ×' + x.qty : '') + '</span><span>' + (x.state === 'free' ? 'Free' : E(x.reason || 'Not available now')) + '</span></li>'; }).join('') + '</ul></div>';
         }).join('') + '</div>' : '<div class="card">' + UI.empty('star', 'No team presets yet', 'Make sets like "Event 2-camera kit" so the crew can add everything in one tap.') + '</div>');
       App.acts = {
-        new: function () { presetForm(null, reload); },
-        edit: function (el) { presetForm(d.team.filter(function (p) { return p.id === el.getAttribute('data-id'); })[0], reload); },
         del: function (el) {
           var p = d.team.filter(function (x) { return x.id === el.getAttribute('data-id'); })[0];
-          UI.ask({ title: 'Delete "' + p.name + '"?', message: 'Everyone loses this preset. No gear is affected.', ok: 'Delete', danger: true }).then(function (ok) { if (ok) App.run(null, 'preset.delete', { id: p.id }).then(function (r) { if (r) { UI.toast('Deleted'); reload(); } }); });
+          UI.ask({ title: 'Delete "' + p.name + '"?', message: 'The crew loses this preset. No gear is affected.', ok: 'Delete', danger: true }).then(function (ok) { if (ok) App.run(null, 'preset.delete', { id: p.id }).then(function (r) { if (r) { UI.toast('Deleted'); load().then(draw); } }); });
         }
       };
     }
-    function reload() { API.call('presets').then(draw, App.error); }
-    return API.call('presets').then(draw);
+    function load() { return Promise.all([API.call('presets', { all: true }), API.call('admin.users')]); }
+    return load().then(draw);
   };
-  function presetForm(p, done) {
-    var picked = p ? p.items.filter(function (x) { return !x.missing; }).map(function (x) { return { item_id: x.item_id, name: x.name, qty: x.qty }; }) : [];
-    var all = [];
-    var s = UI.sheet(UI.sheetHead(p ? 'Edit team preset' : 'New team preset', 'Everyone can use it') +
-      '<form class="stack" id="pf" novalidate><label class="field"><span>Name</span><input class="input" id="pf-n" maxlength="60" value="' + E(p ? p.name : '') + '" placeholder="e.g. Event 2-camera kit"' + (p ? '' : ' autofocus') + '></label>' +
-      '<div class="field"><span>Items</span><div id="pf-list" class="list"></div></div>' +
-      '<div class="field"><span>Add items</span><label class="search">' + I('search') + '<input class="input" id="pf-q" type="search" placeholder="Search all gear"></label><div id="pf-res" class="list" hidden></div></div>' +
-      '<button class="btn primary block" type="submit" id="pf-save" style="min-height:52px">Save preset</button></form>', {
-      'pf-add': function (el) { var id = el.getAttribute('data-id'); var it = all.filter(function (x) { return x.id === id; })[0]; picked.push({ item_id: id, name: it.name, qty: 1 }); q.value = ''; res.hidden = true; list(); },
-      'pf-rm': function (el) { picked.splice(+el.getAttribute('data-i'), 1); list(); },
-      'pf-inc': function (el) { picked[+el.getAttribute('data-i')].qty++; list(); },
-      'pf-dec': function (el) { var x = picked[+el.getAttribute('data-i')]; if (x.qty > 1) x.qty--; list(); }
+
+  /* Preset editor: tick gear from the full list, choose who it is for. */
+  var peState = {};
+  V['a-preset'] = function (main, id) {
+    id = id || 'new';
+    return Promise.all([itemsCache(), API.call('admin.users'), id === 'new' ? null : API.call('presets', { all: true })]).then(function (r) {
+      var items = r[0].items.filter(function (i) { return i.status !== 'archived'; });
+      var cats = r[0].categories.filter(function (c) { return c.status !== 'archived'; });
+      var people = r[1].users.filter(function (u) { return u.status === 'active'; });
+      var p = id === 'new' ? null : r[2].team.filter(function (x) { return x.id === id; })[0];
+      if (id !== 'new' && !p) { main.innerHTML = backHead('Preset not found', '', 'a-presets'); return; }
+      var st = peState[id];
+      if (!st) {
+        st = peState[id] = { name: p ? p.name : '', picked: {}, everyone: !(p && p.users.length), users: {}, cat: 'all', q: '' };
+        if (p) { p.items.forEach(function (x) { if (!x.missing) st.picked[x.item_id] = x.qty; }); p.users.forEach(function (e) { st.users[e] = 1; }); }
+      }
+      var byId = {}; items.forEach(function (i) { byId[i.id] = i; });
+
+      function shown() {
+        var q = st.q.toLowerCase();
+        return items.filter(function (i) {
+          if (q) return (i.name + ' ' + i.code).toLowerCase().indexOf(q) >= 0;
+          if (st.cat === 'picked') return !!st.picked[i.id];
+          return st.cat === 'all' || i.category_id === st.cat;
+        });
+      }
+      function count() { return Object.keys(st.picked).length; }
+      function rowHtml(i) {
+        var on = !!st.picked[i.id];
+        var where = i.holders.length ? 'With ' + i.holders.join(', ') : i.qty > 1 ? i.available + ' of ' + i.qty + ' free' : i.available ? 'In the store' : i.condition;
+        return '<div class="li pe-row' + (on ? ' on' : '') + '" data-row="' + E(i.id) + '"><label class="pe-tick"><input type="checkbox" class="check" data-pi="' + E(i.id) + '"' + (on ? ' checked' : '') + ' aria-label="' + E(i.name) + '">' +
+          '<div class="thumb sm">' + UI.thumb(i.photo, ic(i.category_id)) + '</div><span class="li-main"><span class="li-title">' + E(i.name) + '</span><span class="li-sub"><span class="tape">' + E(i.code) + '</span> · ' + E(where) + '</span></span></label>' +
+          (i.qty > 1 ? '<div class="stepper sm pe-qty"' + (on ? '' : ' hidden') + '><button type="button" data-act="pe-dec" data-id="' + E(i.id) + '" aria-label="Less">' + I('minus') + '</button><b>' + (st.picked[i.id] || 1) + '</b><button type="button" data-act="pe-inc" data-id="' + E(i.id) + '" aria-label="More">' + I('plus') + '</button></div>' : '') + '</div>';
+      }
+      function drawList() {
+        var list = shown();
+        var allOn = list.length && list.every(function (i) { return st.picked[i.id]; });
+        main.querySelector('#pe-tools').innerHTML = '<span class="small muted">' + list.length + ' shown</span><button type="button" class="btn sm ghost" data-act="pe-all">' + I(allOn ? 'x' : 'check') + (allOn ? 'Untick all shown' : 'Tick all shown') + '</button>';
+        main.querySelector('#pe-list').innerHTML = list.length ? list.map(rowHtml).join('') : '<div class="li muted small">' + (st.cat === 'picked' ? 'Nothing ticked yet.' : 'No gear matches.') + '</div>';
+        main.querySelectorAll('#pe-chips .chip').forEach(function (c) { c.setAttribute('aria-pressed', String(!st.q && c.getAttribute('data-id') === st.cat)); });
+      }
+      function drawBar() {
+        var n = count();
+        main.querySelector('#pe-n').textContent = n + ' item' + (n === 1 ? '' : 's');
+        var pc = main.querySelector('#pe-chips [data-id="picked"]'); if (pc) pc.innerHTML = I('check') + 'Ticked · ' + n;
+      }
+      function drawWho() {
+        var box = main.querySelector('#pe-people');
+        box.hidden = st.everyone;
+        var all = people.length && people.every(function (u) { return st.users[u.email]; });
+        box.innerHTML = '<div class="row between" style="margin-bottom:8px"><span class="small muted">' + Object.keys(st.users).filter(function (e) { return people.some(function (u) { return u.email === e; }); }).length + ' of ' + people.length + ' chosen</span>' +
+          '<button type="button" class="btn sm ghost" data-act="pe-users-all">' + (all ? 'Clear' : 'Choose all') + '</button></div>' +
+          '<div class="chips wrap">' + people.map(function (u) {
+            return '<label class="chip pe-user"><input type="checkbox" data-pu="' + E(u.email) + '"' + (st.users[u.email] ? ' checked' : '') + '><span>' + E(u.name) + '</span></label>';
+          }).join('') + '</div>';
+      }
+
+      main.innerHTML = backHead(p ? 'Edit team preset' : 'New team preset', 'Tick the gear, then choose who can use it.', 'a-presets') +
+        '<div class="stack">' +
+        '<label class="field"><span>Preset name</span><input class="input" id="pe-name" maxlength="60" value="' + E(st.name) + '" placeholder="e.g. Event 2-camera kit"></label>' +
+        '<div class="card pad stack-sm"><div class="row between"><div><b>For all users</b><div class="small muted">Off = only the people you choose see it</div></div>' +
+        '<label class="switch"><input type="checkbox" id="pe-everyone"' + (st.everyone ? ' checked' : '') + ' aria-label="For all users"><i></i></label></div><div id="pe-people"' + (st.everyone ? ' hidden' : '') + '></div></div>' +
+        '<div class="field"><span>Gear</span><div class="pick-bar" style="margin:0"><label class="search">' + I('search') + '<input class="input" id="pe-q" type="search" placeholder="Search gear name or code" value="' + E(st.q) + '"></label>' +
+        '<div class="chips" id="pe-chips"><button type="button" class="chip" data-act="pe-cat" data-id="picked">' + I('check') + 'Ticked · ' + count() + '</button><button type="button" class="chip" data-act="pe-cat" data-id="all">All</button>' +
+        cats.map(function (c) { return '<button type="button" class="chip" data-act="pe-cat" data-id="' + E(c.id) + '">' + I(c.icon || 'box') + E(c.name) + '</button>'; }).join('') + '</div></div></div>' +
+        '<div class="row between" id="pe-tools"></div><div class="list" id="pe-list"></div>' +
+        (p ? '<button class="btn ghost block" data-act="pe-del" style="color:var(--bad)">' + I('trash') + 'Delete this preset</button>' : '') +
+        '</div><div class="cartbar"><button class="btn primary" data-act="pe-save"><span>Save preset</span><span class="cart-count" id="pe-n"></span></button></div>';
+      main.classList.add('has-cart');
+      drawList(); drawBar(); drawWho();
+
+      main.querySelector('#pe-name').addEventListener('input', function (e) { st.name = e.target.value; });
+      main.querySelector('#pe-everyone').addEventListener('change', function (e) { st.everyone = e.target.checked; drawWho(); });
+      var qi = main.querySelector('#pe-q');
+      qi.addEventListener('input', UI.debounce(function () { st.q = qi.value.trim(); drawList(); }, 150));
+      if (main._peChange) main.removeEventListener('change', main._peChange); // redraws reuse the same page element
+      main.addEventListener('change', main._peChange = function (e) {
+        var t = e.target, pid = t.getAttribute('data-pi'), pu = t.getAttribute('data-pu');
+        if (pid) {
+          if (t.checked) st.picked[pid] = st.picked[pid] || 1; else delete st.picked[pid];
+          var row = t.closest('.pe-row'); row.classList.toggle('on', t.checked);
+          var q = row.querySelector('.pe-qty'); if (q) { q.hidden = !t.checked; q.querySelector('b').textContent = st.picked[pid] || 1; }
+          drawBar();
+        }
+        if (pu) { if (t.checked) st.users[pu] = 1; else delete st.users[pu]; drawWho(); }
+      });
+      function step(el, d) {
+        var iid = el.getAttribute('data-id'), it = byId[iid];
+        st.picked[iid] = Math.max(1, Math.min(it ? it.qty : 99, (st.picked[iid] || 1) + d));
+        el.closest('.pe-qty').querySelector('b').textContent = st.picked[iid];
+      }
+      App.acts = {
+        'pe-cat': function (el) { st.cat = el.getAttribute('data-id'); st.q = ''; qi.value = ''; drawList(); },
+        'pe-all': function () {
+          var list = shown(), allOn = list.every(function (i) { return st.picked[i.id]; });
+          list.forEach(function (i) { if (allOn) delete st.picked[i.id]; else st.picked[i.id] = st.picked[i.id] || 1; });
+          drawList(); drawBar();
+        },
+        'pe-users-all': function () {
+          var all = people.every(function (u) { return st.users[u.email]; });
+          st.users = {}; if (!all) people.forEach(function (u) { st.users[u.email] = 1; });
+          drawWho();
+        },
+        'pe-inc': function (el) { step(el, 1); },
+        'pe-dec': function (el) { step(el, -1); },
+        'pe-del': function () {
+          UI.ask({ title: 'Delete "' + p.name + '"?', message: 'The crew loses this preset. No gear is affected.', ok: 'Delete', danger: true }).then(function (ok) {
+            if (ok) App.run(null, 'preset.delete', { id: p.id }).then(function (res) { if (res) { delete peState[id]; UI.toast('Deleted'); App.go('a-presets'); } });
+          });
+        },
+        'pe-save': function (el) {
+          var name = st.name.trim(), ids = Object.keys(st.picked);
+          var users = Object.keys(st.users).filter(function (e) { return people.some(function (u) { return u.email === e; }); });
+          if (!name) { UI.toast('Give the preset a name.', true); main.querySelector('#pe-name').focus(); return; }
+          if (!ids.length) { UI.toast('Tick at least one item.', true); return; }
+          if (!st.everyone && !users.length) { UI.toast('Choose at least one person, or turn on "For all users".', true); return; }
+          App.run(el, 'preset.save', { id: p ? p.id : '', name: name, scope: 'team', items: ids.map(function (k) { return { item_id: k, qty: st.picked[k] }; }), users: st.everyone ? [] : users }).then(function (res) {
+            if (res) { delete peState[id]; UI.toast('Preset saved' + (st.everyone ? ' for everyone' : ' for ' + users.length + ' ' + (users.length > 1 ? 'people' : 'person'))); App.go('a-presets'); }
+          });
+        }
+      };
     });
-    var q = s.el.querySelector('#pf-q'), res = s.el.querySelector('#pf-res');
-    function list() {
-      s.el.querySelector('#pf-list').innerHTML = picked.length ? picked.map(function (x, i) {
-        return '<div class="li"><div class="li-main li-title">' + E(x.name) + '</div><div class="stepper"><button type="button" data-act="' + (x.qty > 1 ? 'pf-dec' : 'pf-rm') + '" data-i="' + i + '" aria-label="Less">' + I(x.qty > 1 ? 'minus' : 'x') + '</button><b>' + x.qty + '</b><button type="button" data-act="pf-inc" data-i="' + i + '" aria-label="More">' + I('plus') + '</button></div></div>';
-      }).join('') : '<div class="li muted small">No items yet. Search below to add.</div>';
-    }
-    list();
-    itemsCache().then(function (d) { all = d.items.filter(function (i) { return i.status !== 'archived'; }); });
-    q.addEventListener('input', function () {
-      var t = q.value.trim().toLowerCase();
-      var hits = t ? all.filter(function (i) { return !picked.some(function (x) { return x.item_id === i.id; }) && (i.name + ' ' + i.code).toLowerCase().indexOf(t) >= 0; }).slice(0, 8) : [];
-      res.hidden = !hits.length;
-      res.innerHTML = hits.map(function (i) { return '<button type="button" class="li" data-act="pf-add" data-id="' + E(i.id) + '"><span class="li-main"><span class="li-title">' + E(i.name) + '</span> <span class="tape">' + E(i.code) + '</span></span>' + I('plus') + '</button>'; }).join('');
-    });
-    s.el.querySelector('#pf').addEventListener('submit', function (e) {
-      e.preventDefault();
-      var name = s.el.querySelector('#pf-n').value.trim();
-      if (!name) { UI.toast('Give the preset a name.', true); return; }
-      if (!picked.length) { UI.toast('Add at least one item.', true); return; }
-      App.run(s.el.querySelector('#pf-save'), 'preset.save', { id: p ? p.id : '', name: name, scope: 'team', items: picked }).then(function (r) { if (r) { s.close(); UI.toast('Team preset saved'); done(); } });
-    });
-  }
+  };
 
   // =================== ACTIVITY LOG ===================
   V['a-log'] = function (main) {
