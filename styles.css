@@ -589,6 +589,27 @@ button.stat { border: 0; text-align: left; }
   .chips { flex-wrap: wrap; overflow: visible; row-gap: 8px; }
 }
 
+/* v0.9.3 · Items page on a laptop: categories in a side list, items on the right.
+   Phones and small windows never match this, so they keep the sliding chips. */
+.iside { display: none; }
+@media (min-width: 960px) and (hover: hover) and (pointer: fine) {
+  .shell:has(.iwrap) { max-width: 1080px; }
+  .iwrap { display: grid; grid-template-columns: 240px minmax(0, 1fr); gap: 20px; align-items: start; }
+  .iwrap .pick-bar .chips { display: none; }
+  .iside { display: grid; gap: 2px; position: sticky; top: calc(env(safe-area-inset-top, 0px) + 74px); max-height: calc(100vh - 160px); overflow-y: auto; scrollbar-width: thin;
+    background: var(--surface); border-radius: var(--r); box-shadow: var(--shadow); padding: 8px; }
+  .iside button { display: flex; align-items: center; gap: 10px; border: 0; background: none; padding: 9px 10px; border-radius: 10px; font: 600 14px var(--f-body); color: var(--ink); text-align: left; cursor: pointer; min-width: 0; }
+  .iside button:hover { background: var(--line); }
+  .iside button svg { width: 18px; height: 18px; color: var(--ink-2); flex: none; }
+  .iside .is-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .iside .n { margin-left: auto; font: 600 12px var(--f-mono); color: var(--ink-2); }
+  .iside button[aria-pressed="true"] { background: var(--ink); color: var(--bg); }
+  .iside button[aria-pressed="true"] svg, .iside button[aria-pressed="true"] .n { color: var(--bg); }
+  .iside button:focus-visible { outline: 3px solid var(--accent); outline-offset: 1px; }
+  .iside hr { border: 0; border-top: 1px solid var(--line); margin: 6px 4px; }
+  .iside .is-label { font: 700 10.5px var(--f-mono); letter-spacing: .12em; text-transform: uppercase; color: var(--ink-2); padding: 8px 10px 4px; }
+}
+
 /* v0.9.3 · loading animations */
 .boot { min-height: 100vh; min-height: 100dvh; display: grid; place-items: center; align-content: center; gap: 16px; padding: 24px; text-align: center; background: radial-gradient(90% 60% at 50% 40%, #26221f 0%, #171615 60%, #0e0d0c 100%); color: #f1f0ed; }
 .boot-vf { position: relative; width: 112px; height: 78px; display: grid; place-items: center; }

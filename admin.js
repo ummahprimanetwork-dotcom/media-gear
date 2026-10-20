@@ -393,7 +393,19 @@
       });
       var activeCats = d.categories.filter(function (c) { return c.status !== 'archived'; });
       var chip = function (id, label, icn) { return '<button class="chip" data-act="f" data-id="' + id + '" aria-pressed="' + (iFilter === id && !iQ) + '">' + (icn ? I(icn) : '') + E(label) + '</button>'; };
+      // Laptop side list (hidden on phones, which keep the sliding chips).
+      var live = d.items.filter(function (i) { return i.status !== 'archived'; });
+      var cnt = { all: live.length, inuse: 0, attention: 0, archived: d.items.length - live.length };
+      live.forEach(function (i) {
+        if (i.used > 0) cnt.inuse++;
+        if (['Incomplete', 'Damaged', 'Under Repair', 'Lost'].indexOf(i.condition) >= 0) cnt.attention++;
+        cnt[i.category_id] = (cnt[i.category_id] || 0) + 1;
+      });
+      var srow = function (id, label, icn) { return '<button type="button" data-act="f" data-id="' + E(id) + '" aria-pressed="' + (iFilter === id && !iQ) + '">' + I(icn || 'box') + '<span class="is-name">' + E(label) + '</span><span class="n">' + (cnt[id] || 0) + '</span></button>'; };
+      var side = '<aside class="iside" aria-label="Filter items"><div class="is-label">Show</div>' + srow('all', 'All items', 'box') + srow('inuse', 'In use', 'out') + srow('attention', 'Needs attention', 'alert') +
+        '<hr><div class="is-label">Categories</div>' + activeCats.map(function (c) { return srow(c.id, c.name, c.icon); }).join('') + '<hr>' + srow('archived', 'Removed', 'trash') + '</aside>';
       main.innerHTML = head('Items', d.items.filter(function (i) { return i.status !== 'archived'; }).length + ' on the list', '<div class="row" style="gap:8px;flex:none"><button class="btn sm ghost" data-act="go" data-to="a-presets">' + I('star') + 'Presets</button><button class="btn sm primary" data-act="new">' + I('plus') + 'Add item</button></div>') +
+        '<div class="iwrap">' + side + '<div class="imain">' +
         '<div class="pick-bar"><label class="search">' + I('search') + '<input class="input" id="iq" type="search" placeholder="Search name, code, serial, remark" value="' + E(iQ) + '" aria-label="Search items"></label>' +
         '<div class="chips">' + chip('all', 'All') + chip('inuse', 'In use') + chip('attention', 'Needs attention', 'alert') + activeCats.map(function (c) { return chip(c.id, c.name, c.icon); }).join('') + chip('archived', 'Removed', 'trash') + '</div></div>' +
         (catName[iFilter] && !iQ ? '<div class="row between" style="margin:-2px 0 10px"><span class="small muted">' + list.length + ' in ' + E(catName[iFilter]) + '</span><button class="btn sm ghost" data-act="go" data-to="a-cat-move/' + E(iFilter) + '">' + I('swap') + 'Move items here</button></div>' : '') +
@@ -402,7 +414,7 @@
           return '<button class="li" data-act="go" data-to="a-item/' + E(i.id) + '"><div class="thumb">' + UI.thumb(i.photo, ic(i.category_id)) + '</div><div class="li-main"><div class="li-title">' + E(i.name) + '</div>' +
             '<div class="li-sub"><span class="tape">' + E(i.code) + '</span> · ' + E(where) + '</div>' + (i.issue ? '<div class="li-sub" style="color:var(--bad);font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">' + E(i.issue) + '</div>' : i.remark ? '<div class="li-sub" style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis">' + E(i.remark) + '</div>' : '') + '</div>' +
             (i.condition !== 'Good' ? UI.condPill(i.condition) : i.used ? UI.pill('In use', 'p-bad') : '') + '</button>';
-        }).join('') + '</div>' : '<div class="card">' + UI.empty('box', 'No items here', '') + '</div>');
+        }).join('') + '</div>' : '<div class="card">' + UI.empty('box', 'No items here', '') + '</div>') + '</div></div>';
       var inp = document.getElementById('iq');
       inp.addEventListener('input', UI.debounce(function () { iQ = inp.value.trim().toLowerCase(); draw(d); var n = document.getElementById('iq'); n.focus(); n.setSelectionRange(n.value.length, n.value.length); }, 200));
       App.acts = {
