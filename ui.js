@@ -1,6 +1,7 @@
 /* UI helpers: icons, formatting, sheets, toasts, photos. */
 var UI = (function () {
   var P = {
+    aperture: '<circle cx="12" cy="12" r="10"/><path d="M14.31 8l5.74 9.94M9.69 8h11.48M7.38 12l5.74-9.94M9.69 16L3.95 6.06M14.31 16H2.83M16.62 12l-5.74 9.94"/>',
     camera: '<path d="M3 8.5A2.5 2.5 0 0 1 5.5 6h2l1.5-2h6l1.5 2h2A2.5 2.5 0 0 1 21 8.5v9a2.5 2.5 0 0 1-2.5 2.5h-13A2.5 2.5 0 0 1 3 17.5z"/><circle cx="12" cy="13" r="4"/>',
     lens: '<circle cx="12" cy="12" r="9"/><circle cx="12" cy="12" r="5"/><circle cx="12" cy="12" r="1.5"/>',
     tripod: '<rect x="8" y="3" width="8" height="5" rx="1"/><path d="M12 8v4M12 12l-6 9M12 12l6 9M12 12v9"/>',
@@ -130,7 +131,7 @@ var UI = (function () {
       var s = sheet(sheetHead(o.title) +
         (o.message ? '<p class="muted" style="margin:0 0 14px">' + esc(o.message) + '</p>' : '') +
         (o.input ? '<label class="field" style="margin-bottom:14px"><span>' + esc(o.input) + '</span><textarea class="input" id="ask-input" autofocus placeholder="' + esc(o.placeholder || '') + '"></textarea></label>' : '') +
-        '<div class="row"><button class="btn ghost grow" data-act="close-sheet">Back</button><button class="btn grow ' + (o.danger ? 'danger' : 'primary') + '" data-act="ask-ok">' + esc(o.ok || 'Confirm') + '</button></div>',
+        '<div class="row"><button class="btn ghost grow" data-act="close-sheet">' + esc(o.back || 'Back') + '</button><button class="btn grow ' + (o.danger ? 'danger' : 'primary') + '" data-act="ask-ok">' + esc(o.ok || 'Confirm') + '</button></div>',
         { 'ask-ok': function () { done = true; var v = o.input ? s.el.querySelector('#ask-input').value.trim() : true; if (o.input && o.required && !v) { toast('Please write a reason.', true); done = false; return; } s.close(); resolve(v); } },
         { onClose: function () { if (!done) resolve(o.input ? null : false); } });
     });
@@ -187,14 +188,43 @@ var UI = (function () {
     if (img && img.tagName === 'IMG' && img.getAttribute('data-fb')) { var span = document.createElement('span'); span.className = 'fb'; span.innerHTML = icon(img.getAttribute('data-fb')); img.replaceWith(span.firstChild); }
   }, true);
 
+  // Chip rows (filters, categories): on a phone you swipe them sideways, so fade the edge that has more chips.
+  // On a computer they wrap onto extra lines instead (see .chips in styles.css), so nothing hides.
+  function chipFade(c) {
+    var more = c.scrollWidth - c.clientWidth > 4;
+    c.classList.toggle('fade-l', more && c.scrollLeft > 4);
+    c.classList.toggle('fade-r', more && c.scrollLeft + c.clientWidth < c.scrollWidth - 4);
+  }
+  function chipFadeAll() { [].forEach.call(document.querySelectorAll('.chips'), chipFade); }
+  document.addEventListener('scroll', function (e) { var t = e.target; if (t && t.classList && t.classList.contains('chips')) chipFade(t); }, true);
+  window.addEventListener('resize', debounce(chipFadeAll, 150));
+  if (typeof MutationObserver !== 'undefined') {
+    var chipRaf = 0;
+    new MutationObserver(function () { cancelAnimationFrame(chipRaf); chipRaf = requestAnimationFrame(chipFadeAll); })
+      .observe(document.documentElement, { childList: true, subtree: true });
+  }
+
   function debounce(fn, ms) { var t; return function () { var a = arguments, me = this; clearTimeout(t); t = setTimeout(function () { fn.apply(me, a); }, ms); }; }
   function initials(name) { return String(name || '?').split(/\s+/).filter(Boolean).slice(0, 2).map(function (w) { return w[0]; }).join('').toUpperCase(); }
-  function loading() { return '<div class="stack"><div class="skel"></div><div class="skel"></div><div class="skel"></div></div>'; }
+  // ---------- loading animations ----------
+  var LOAD_WORDS = ['Rolling', 'Focusing', 'Checking the shelves', 'Counting batteries', 'Wiping the lenses', 'Syncing'];
+  /** Page loading: a small spinning aperture with a crew word, in the middle of the page. */
+  function loading() {
+    return '<div class="ld" role="status"><span class="ld-ap">' + icon('aperture') + '</span><span>' + LOAD_WORDS[Math.floor(Math.random() * LOAD_WORDS.length)] + '…</span></div>';
+  }
+  /** Full-screen splash while the app opens (same markup is in index.html so it shows before the scripts load). */
+  function boot(name) {
+    return '<div class="boot" role="status" aria-label="Loading"><div class="boot-vf"><span class="boot-rec"><b></b>REC</span><i class="tl"></i><i class="tr"></i><i class="bl"></i><i class="br"></i>' +
+      '<svg class="boot-ap" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">' + ICONS.aperture + '</svg></div>' +
+      '<div class="boot-name">' + esc(name || 'UmmahPrima Network') + '</div>' +
+      '<div class="boot-msg"><span>Opening the store room</span><span>Checking the gear</span><span>Charging batteries</span><span>Almost rolling</span></div>' +
+      '<div class="boot-bar"><i></i></div></div>';
+  }
   function empty(ic, title, text) { return '<div class="empty">' + icon(ic) + '<b>' + esc(title) + '</b>' + esc(text || '') + '</div>'; }
 
   return {
     icon: icon, ICONS: ICONS, esc: esc, when: when, day: day, daysAgo: daysAgo, todayStr: todayStr, pill: pill, linePill: linePill, orderPill: orderPill, condPill: condPill,
     toast: toast, sheet: sheet, sheetHead: sheetHead, topSheet: topSheet, closeAll: closeAll, ask: ask, pickPhoto: pickPhoto, photos: photos, photoList: photoList,
-    debounce: debounce, thumb: thumb, initials: initials, loading: loading, empty: empty
+    debounce: debounce, thumb: thumb, initials: initials, loading: loading, boot: boot, empty: empty
   };
 })();

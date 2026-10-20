@@ -69,7 +69,9 @@ var API = (function () {
   function net(action, payload, fresh) {
     if (DEMO) {
       if (!io) demoBoot();
+      busy(1);
       return sleep(120 + Math.random() * 180).then(function () {
+        busy(-1);
         var meta = {};
         try {
           var data = Logic.run(action, payload || {}, io, token, meta);
@@ -88,7 +90,21 @@ var API = (function () {
       return { data: j.data, reads: j.reads, changed: j.changed };
     });
   }
+  // Thin red bar across the top while the phone talks to the backend (only if it takes a moment).
+  var busyN = 0, busyT = null;
+  function busy(d) {
+    busyN = Math.max(0, busyN + d);
+    if (typeof document === 'undefined') return;
+    var el = document.documentElement;
+    if (busyN && !busyT && !el.classList.contains('is-busy')) busyT = setTimeout(function () { busyT = null; if (busyN) el.classList.add('is-busy'); }, 250);
+    if (!busyN) { clearTimeout(busyT); busyT = null; el.classList.remove('is-busy'); }
+  }
   function post(body) {
+    busy(1);
+    var done = function (x) { busy(-1); return x; }, failed = function (e) { busy(-1); throw e; };
+    return rawPost(body).then(done, failed);
+  }
+  function rawPost(body) {
     return fetch(cfg.API_URL, { method: 'POST', headers: { 'Content-Type': 'text/plain;charset=utf-8' }, body: JSON.stringify(body) })
       .then(function (r) { if (!r.ok) throw new Error('HTTP ' + r.status); return r.json(); }, function () { return fail('No connection. Check your internet and try again.', 'NETWORK'); })
       .then(null, function (e) { if (e.code) throw e; return fail('The server did not answer properly. Try again in a moment.', 'SERVER'); });

@@ -903,6 +903,27 @@ var Logic = (function () {
     cats.forEach(function (x, k) { if (N(x.sort) !== k + 1) c.upd('Categories', x, { sort: k + 1 }); });
     return { ok: true };
   };
+  /** Move many items into one category at once (e.g. a new "Gimbal" category). Codes stay the same. */
+  A['admin.items.move'] = function (c, p) {
+    var cat = c.all('Categories').filter(function (x) { return S(x.id) === S(p.category_id) && S(x.status) !== 'archived'; })[0];
+    if (!cat) fail('Choose a category to move the items into.');
+    var items = itemMap(c), cats = {};
+    c.all('Categories').forEach(function (x) { cats[S(x.id)] = S(x.name); });
+    var ids = (p.ids || []).map(S).filter(function (id, i, a) { return a.indexOf(id) === i; });
+    if (!ids.length) fail('Tick at least one item to move.');
+    var moved = [];
+    ids.forEach(function (id) {
+      var it = items[id];
+      if (!it || S(it.category_id) === S(cat.id)) return;
+      var from = cats[S(it.category_id)] || S(it.category_id);
+      c.upd('Items', it, { category_id: S(cat.id), updated_at: c.now });
+      itemLog(c, it.id, 'edit', 'Category: ' + from + ' → ' + S(cat.name));
+      moved.push(S(it.name));
+    });
+    if (!moved.length) fail('Those items are already in ' + S(cat.name) + '.');
+    c.log('item.move', moved.length + ' item' + (moved.length > 1 ? 's' : '') + ' → ' + S(cat.name) + ': ' + moved.join(', '));
+    return { moved: moved.length, category: { id: S(cat.id), name: S(cat.name) } };
+  };
   A['admin.category.archive'] = function (c, p) {
     var cur = c.all('Categories').filter(function (x) { return S(x.id) === S(p.id); })[0];
     if (!cur) fail('Category not found.', 'NOT_FOUND');

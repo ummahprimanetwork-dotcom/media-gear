@@ -9,7 +9,7 @@ var App = (function () {
     user: [['home', 'board', 'Dashboard'], ['pick', 'cart', 'Gear'], ['profile', 'user', 'Profile']],
     admin: [['a-home', 'board', 'Overview'], ['a-approvals', 'inbox', 'Approvals'], ['a-orders', 'receipt', 'Orders'], ['a-items', 'box', 'Items'], ['a-more', 'more', 'More']]
   };
-  var NAV_PARENT = { mine: 'profile', cart: 'pick', photo: 'pick', done: 'pick', 'a-order': 'a-orders', 'a-item': 'a-items', 'a-users': 'a-more', 'a-presets': 'a-items', 'a-preset': 'a-items', 'a-cats': 'a-more', 'a-settings': 'a-more', 'a-log': 'a-more' };
+  var NAV_PARENT = { mine: 'profile', cart: 'pick', photo: 'pick', done: 'pick', 'a-order': 'a-orders', 'a-item': 'a-items', 'a-users': 'a-more', 'a-presets': 'a-items', 'a-preset': 'a-items', 'a-cats': 'a-more', 'a-cat-move': 'a-items', 'a-settings': 'a-more', 'a-log': 'a-more' };
   var root = document.getElementById('app');
 
   // ---------- clicks: data-act="name" ----------
@@ -283,7 +283,7 @@ var App = (function () {
     document.body.setAttribute('data-entry', App.mode);
     if (API.DEMO) document.title = (App.mode === 'admin' ? 'Media Gear Admin' : HUB) + ' (demo)';
     if (!API.hasToken()) { renderLogin(); return; }
-    root.innerHTML = '<div class="loading" style="min-height:80vh"><div class="spin"></div></div>';
+    if (!root.querySelector('.boot')) root.innerHTML = UI.boot(App.mode === 'admin' ? 'Media Gear Admin' : HUB);
     API.call('auth.me').then(function (d) {
       App.user = d.user; App.settings = d.settings;
       if (App.mode === 'admin' && d.user.role !== 'admin') { App.user = null; loginError = 'This account is not an admin.'; return renderLogin(); }

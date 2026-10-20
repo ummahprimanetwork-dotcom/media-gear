@@ -32,14 +32,69 @@
         (d.attention.length ? '<div class="group-h">' + I('alert') + 'Needs attention<span class="n">' + d.attention.length + '</span></div><div class="list">' + d.attention.map(function (i) {
           return '<button class="li" data-act="go" data-to="a-item/' + E(i.id) + '"><div class="thumb">' + I(ic(i.category_id)) + '</div><div class="li-main"><div class="li-title">' + E(i.name) + '</div><div class="li-sub"><span class="tape">' + E(i.code) + '</span>' + (i.issue ? ' · ' + E(i.issue) : '') + '</div></div>' + UI.condPill(i.condition) + '</button>';
         }).join('') + '</div>' : '') +
-        '<div class="group-h">' + I('clock') + 'Recent activity</div><div class="list">' + (d.activity.length ? d.activity.map(actRow).join('') : '<div class="li muted">No activity yet.</div>') + '</div>' +
+        '<div class="group-h">' + I('clock') + 'Recent activity</div><div class="list">' + (d.activity.filter(function (a) { return a.action !== 'auth.login'; }).length ? d.activity.filter(function (a) { return a.action !== 'auth.login'; }).slice(0, 8).map(actRow).join('') : '<div class="li muted">No activity yet.</div>') + '</div>' +
         '<div style="margin-top:12px"><button class="btn ghost block" data-act="go" data-to="a-log">Full activity log</button></div>';
     }
     App.every(30000, function () { API.call('admin.overview').then(function (d) { if (App.route === 'a-home') draw(d); }).catch(function () {}); });
-    return Promise.all([API.call('admin.overview'), cats.length ? null : itemsCache()]).then(function (r) { draw(r[0]); });
+    return Promise.all([API.call('admin.overview'), itemsCache().then(function (d) { setCodes(d.items); return d; }), API.call('admin.users').then(function (u) { setWho(u.users); }, function () {})]).then(function (r) { draw(r[0]); });
   };
+  // ---------- activity in plain words ----------
+  var who = {}, codeName = {}; // email → name (Users list), item code → name (Items list)
+  function setCodes(items) { (items || []).forEach(function (i) { codeName[i.code] = i.name; }); }
+  function setWho(users) { (users || []).forEach(function (u) { who[String(u.email).toLowerCase()] = u.name; }); }
+  function nameOf(email) { var e = String(email || '').toLowerCase(); return who[e] || (e ? e.split('@')[0] : 'System'); }
+  function first(n) { return String(n).split(' ')[0]; }
+  function after(d) { var i = d.indexOf(': '); return i >= 0 ? d.slice(i + 2) : ''; }          // "ORD-1: A, B" → "A, B"
+  function orderNo(d) { var m = /^(ORD-[\w-]+)/.exec(d); return m ? m[1] : ''; }
+  var KIND = { out: 'Gear out & in', hand: 'Handovers', item: 'Items', people: 'People & settings' };
+  /** Turns one Log row into { icon, tone, kind, title, text, order }. */
+  function friendly(a) {
+    var d = String(a.detail || ''), n = nameOf(a.email), f = first(n), r;
+    switch (a.action) {
+      case 'order.checkout': r = ['out', 'red', 'out', f + ' took out gear', after(d)]; break;
+      case 'order.return_request': r = ['clock', 'warn', 'out', f + ' is returning gear', after(d).replace(' | note: ', ' · note: “') + (/ \| note: /.test(d) ? '”' : '')]; break;
+      case 'order.return_approve':
+        var parts = after(d).split('; still with ');
+        r = ['check', 'ok', 'out', 'Gear returned', (parts[0] === 'nothing returned' ? 'Nothing came back' : parts[0].replace(/ \(Good\)/g, '')) + (parts[1] ? ' · still with ' + parts[1] : '') + ' · checked by ' + f]; break;
+      case 'order.return_reject': r = ['x', 'bad', 'out', 'Return not accepted', after(d) + ' · by ' + f]; break;
+      case 'order.user_cancel': r = ['x', 'mute', 'out', f + ' cancelled a booking', '']; break;
+      case 'order.cancel': r = ['x', 'bad', 'out', 'Order cancelled by ' + f, after(d)]; break;
+      case 'order.approve_out': r = ['check', 'ok', 'out', 'Checkout approved by ' + f, '']; break;
+      case 'order.reject_out': r = ['x', 'bad', 'out', 'Checkout rejected by ' + f, after(d)]; break;
+      case 'order.edit': r = ['edit', 'mute', 'out', 'Order changed by ' + f, after(d)]; break;
+      case 'handover.request': r = ['swap', 'info', 'hand', f + ' asked to take over gear', d.replace(': ', ' · ')]; break;
+      case 'handover.done': r = ['swap', 'ok', 'hand', 'Gear handed over', d.replace(/ \(ORD-[\w-]+\)$/, '').replace(': ', ' · ')]; break;
+      case 'handover.decline': r = ['x', 'mute', 'hand', 'Handover declined', d.replace(': ', ' · ')]; break;
+      case 'handover.cancel': r = ['x', 'mute', 'hand', 'Handover cancelled', d]; break;
+      case 'item.create': r = ['plus', 'ok', 'item', 'New item added', d.replace(/^\S+ /, '')]; break;
+      case 'item.edit': r = ['edit', 'mute', 'item', 'Item details changed · ' + (codeName[d.split(':')[0]] || d.split(':')[0]), after(d)]; break;
+      case 'item.log':
+        var m = /^(\S+) (\w+): ([\s\S]*)$/.exec(d) || [0, '', 'note', d];
+        var L = { damage: ['alert', 'bad', 'Damage reported'], repair: ['wrench', 'ok', 'Repaired'], service: ['wrench', 'info', 'Serviced'], note: ['note', 'mute', 'Note added'] }[m[2]] || ['note', 'mute', 'Item note'];
+        r = [L[0], L[1], 'item', L[2] + (m[1] ? ' · ' + (codeName[m[1]] || m[1]) : ''), m[3].replace(/\s*\[Condition: [^\]]*?→ ([^\]]+)\]/, ' · now $1')]; break;
+      case 'item.archive': r = ['trash', 'mute', 'item', 'Item removed from the list', d]; break;
+      case 'item.restore': r = ['box', 'ok', 'item', 'Item put back on the list', d]; break;
+      case 'item.move': r = ['folder', 'info', 'item', d.split(': ')[0].replace('→', 'moved to'), after(d)]; break;
+      case 'preset.save': r = ['star', 'info', 'item', 'Preset saved', d.replace(/^team: /, 'Team · ')]; break;
+      case 'preset.delete': r = ['trash', 'mute', 'item', 'Preset deleted', d]; break;
+      case 'category.create': r = ['folder', 'ok', 'item', 'New category', d.replace(/^\S+ /, '')]; break;
+      case 'category.edit': r = ['folder', 'mute', 'item', 'Category renamed', d.replace(/^\S+ → /, '')]; break;
+      case 'category.archive': r = ['trash', 'mute', 'item', 'Category removed', d]; break;
+      case 'category.restore': r = ['folder', 'ok', 'item', 'Category restored', d]; break;
+      case 'user.register': r = ['user', 'warn', 'people', n + ' signed in for the first time', /pending/.test(d) ? 'Waiting for approval' : 'Let in automatically']; break;
+      case 'user.add': r = ['users', 'ok', 'people', 'Person added by ' + f, d.replace(' as ', ' · ')]; break;
+      case 'user.edit': r = ['users', 'mute', 'people', 'Person updated by ' + f, d.replace(/^(\S+): (\w+), (\w+)$/, function (x, e, role, st) { return nameOf(e) + ' · ' + role + ' · ' + st; })]; break;
+      case 'settings.save': r = ['sliders', 'mute', 'people', 'Settings changed by ' + f, d]; break;
+      case 'auth.login': r = ['user', 'mute', 'login', f + ' opened the ' + (/admin/.test(d) ? 'admin side' : 'app'), '']; break;
+      default: r = ['note', 'mute', 'people', d || a.action, ''];
+    }
+    return { icon: r[0], tone: r[1], kind: r[2], title: r[3], text: r[4], order: orderNo(d), when: a.date, who: n };
+  }
   function actRow(a) {
-    return '<div class="li"><div class="li-main"><div class="li-title small">' + E(a.detail || a.action) + '</div><div class="li-sub">' + E(a.email || 'system') + ' · ' + E(UI.when(a.date)) + ' · <span style="font-family:var(--f-mono);font-size:11.5px">' + E(a.action) + '</span></div></div></div>';
+    var x = friendly(a);
+    return '<div class="li act"><div class="act-ic t-' + x.tone + '">' + I(x.icon) + '</div><div class="li-main"><div class="li-title">' + E(x.title) + '</div>' +
+      (x.text ? '<div class="act-text">' + E(x.text) + '</div>' : '') +
+      '<div class="li-sub">' + E(UI.when(x.when)) + (x.order ? ' · <span class="tape">' + E(x.order) + '</span>' : '') + '</div></div></div>';
   }
 
   // =================== APPROVALS ===================
@@ -340,6 +395,7 @@
       main.innerHTML = head('Items', d.items.filter(function (i) { return i.status !== 'archived'; }).length + ' on the list', '<div class="row" style="gap:8px;flex:none"><button class="btn sm ghost" data-act="go" data-to="a-presets">' + I('star') + 'Presets</button><button class="btn sm primary" data-act="new">' + I('plus') + 'Add item</button></div>') +
         '<div class="pick-bar"><label class="search">' + I('search') + '<input class="input" id="iq" type="search" placeholder="Search name, code, serial, remark" value="' + E(iQ) + '" aria-label="Search items"></label>' +
         '<div class="chips">' + chip('all', 'All') + chip('inuse', 'In use') + chip('attention', 'Needs attention', 'alert') + activeCats.map(function (c) { return chip(c.id, c.name, c.icon); }).join('') + chip('archived', 'Removed', 'trash') + '</div></div>' +
+        (catName[iFilter] && !iQ ? '<div class="row between" style="margin:-2px 0 10px"><span class="small muted">' + list.length + ' in ' + E(catName[iFilter]) + '</span><button class="btn sm ghost" data-act="go" data-to="a-cat-move/' + E(iFilter) + '">' + I('swap') + 'Move items here</button></div>' : '') +
         (list.length ? '<div class="list">' + list.map(function (i) {
           var where = i.holders.length ? 'With ' + i.holders.join(', ') : i.status === 'archived' ? 'Removed from the pick list' : i.qty > 1 ? i.available + ' of ' + i.qty + ' free' : i.available ? 'In the store' : 'Not pickable';
           return '<button class="li" data-act="go" data-to="a-item/' + E(i.id) + '"><div class="thumb">' + UI.thumb(i.photo, ic(i.category_id)) + '</div><div class="li-main"><div class="li-title">' + E(i.name) + '</div>' +
@@ -550,7 +606,9 @@
       (isNew ? '<label class="field"><span>Short code (optional)</span><input class="input" id="cf-c" maxlength="3" placeholder="e.g. STR" style="text-transform:uppercase"><small>2–3 letters, used for item codes like STR-01.</small></label>' : '') +
       '<div class="field"><span>Icon</span><div class="chips" style="flex-wrap:wrap" id="cf-i">' + UI.ICONS.map(function (k) { return '<button type="button" class="chip" data-i="' + k + '" aria-pressed="' + (k === icon) + '" aria-label="' + k + '">' + I(k) + '</button>'; }).join('') + '</div></div>' +
       '<button class="btn primary block" type="submit" id="cf-save" style="min-height:52px">' + (isNew ? 'Add category' : 'Save') + '</button>' +
-      (!isNew ? '<button class="btn danger block" type="button" data-act="cf-del">' + I('trash') + 'Remove category</button>' : '') + '</form>', {
+      (!isNew ? '<button class="btn ghost block" type="button" data-act="cf-move">' + I('swap') + 'Move items into ' + E(c.name) + '</button>' +
+        '<button class="btn danger block" type="button" data-act="cf-del">' + I('trash') + 'Remove category</button>' : '') + '</form>', {
+      'cf-move': function () { s.close(); App.go('a-cat-move/' + c.id); },
       'cf-del': function (el) {
         if (count[c.id]) { UI.toast('Move or remove its ' + count[c.id] + ' items first.', true); return; }
         App.run(el, 'admin.category.archive', { id: c.id, archived: true }).then(function (r) { if (r) { s.close(); done(); } });
@@ -560,9 +618,94 @@
     s.el.querySelector('#cf').addEventListener('submit', function (e) {
       e.preventDefault();
       var n = s.el.querySelector('#cf-n').value.trim(); if (!n) { UI.toast('Give it a name.', true); return; }
-      App.run(s.el.querySelector('#cf-save'), 'admin.category.save', { id: isNew ? '' : c.id, name: n, icon: icon, code: isNew ? s.el.querySelector('#cf-c').value : '' }).then(function (r) { if (r) { s.close(); UI.toast('Saved'); done(); } });
+      App.run(s.el.querySelector('#cf-save'), 'admin.category.save', { id: isNew ? '' : c.id, name: n, icon: icon, code: isNew ? s.el.querySelector('#cf-c').value : '' }).then(function (r) {
+        if (!r) return;
+        s.close(); done();
+        if (!isNew) { UI.toast('Saved'); return; }
+        UI.ask({ title: n + ' is ready', message: 'Move existing items into it now? You can tick gear from any category.', ok: 'Move items in', back: 'Not now' }).then(function (go) { if (go) App.go('a-cat-move/' + r.category.id); else UI.toast('Category added'); });
+      });
     });
   }
+
+  // =================== MOVE ITEMS INTO A CATEGORY ===================
+  var mvState = {};
+  V['a-cat-move'] = function (main, catId) {
+    return itemsCache().then(function (d) {
+      var target = d.categories.filter(function (c) { return c.id === catId && c.status !== 'archived'; })[0];
+      if (!target) { main.innerHTML = backHead('Category not found', '', 'a-cats'); return; }
+      var others = d.categories.filter(function (c) { return c.status !== 'archived' && c.id !== catId; });
+      var names = {}; d.categories.forEach(function (c) { names[c.id] = c.name; });
+      var items = d.items.filter(function (i) { return i.status !== 'archived'; });
+      var here = items.filter(function (i) { return i.category_id === catId; }).length;
+      var st = mvState[catId] || (mvState[catId] = { picked: {}, cat: 'all', q: '' });
+      function shown() {
+        var q = st.q.toLowerCase();
+        return items.filter(function (i) {
+          if (i.category_id === catId) return false;
+          if (q) return (i.name + ' ' + i.code).toLowerCase().indexOf(q) >= 0;
+          if (st.cat === 'picked') return !!st.picked[i.id];
+          return st.cat === 'all' || i.category_id === st.cat;
+        });
+      }
+      function n() { return Object.keys(st.picked).length; }
+      function drawList() {
+        var list = shown(), allOn = list.length && list.every(function (i) { return st.picked[i.id]; });
+        main.querySelector('#mv-tools').innerHTML = '<span class="small muted">' + list.length + ' shown</span>' + (list.length ? '<button type="button" class="btn sm ghost" data-act="mv-all">' + I(allOn ? 'x' : 'check') + (allOn ? 'Untick all shown' : 'Tick all shown') + '</button>' : '');
+        main.querySelector('#mv-list').innerHTML = list.length ? list.map(function (i) {
+          var on = !!st.picked[i.id];
+          return '<label class="li pe-row' + (on ? ' on' : '') + '"><span class="pe-tick"><input type="checkbox" class="check" data-mv="' + E(i.id) + '"' + (on ? ' checked' : '') + ' aria-label="' + E(i.name) + '">' +
+            '<span class="thumb sm">' + UI.thumb(i.photo, ic(i.category_id)) + '</span><span class="li-main"><span class="li-title">' + E(i.name) + '</span><span class="li-sub"><span class="tape">' + E(i.code) + '</span> · now in ' + E(names[i.category_id] || i.category_id) + '</span></span></span></label>';
+        }).join('') : '<div class="li muted small">' + (st.cat === 'picked' ? 'Nothing ticked yet.' : 'No gear matches.') + '</div>';
+        main.querySelectorAll('#mv-chips .chip').forEach(function (c) { c.setAttribute('aria-pressed', String(!st.q && c.getAttribute('data-id') === st.cat)); });
+      }
+      function drawBar() {
+        var k = n();
+        main.querySelector('#mv-n').textContent = k + ' item' + (k === 1 ? '' : 's');
+        main.querySelector('#mv-chips [data-id="picked"]').innerHTML = I('check') + 'Ticked · ' + k;
+      }
+      main.innerHTML = backHead('Move items into ' + target.name, here + ' already in ' + E(target.name) + '. Item codes stay the same.', 'a-cats') +
+        '<div class="stack"><div class="pick-bar" style="margin:0"><label class="search">' + I('search') + '<input class="input" id="mv-q" type="search" placeholder="Search gear name or code" value="' + E(st.q) + '"></label>' +
+        '<div class="chips" id="mv-chips"><button type="button" class="chip" data-act="mv-cat" data-id="picked">' + I('check') + 'Ticked · 0</button><button type="button" class="chip" data-act="mv-cat" data-id="all">All</button>' +
+        others.map(function (c) { return '<button type="button" class="chip" data-act="mv-cat" data-id="' + E(c.id) + '">' + I(c.icon || 'box') + E(c.name) + '</button>'; }).join('') + '</div></div>' +
+        '<div class="row between" id="mv-tools"></div><div class="list" id="mv-list"></div></div>' +
+        '<div class="cartbar"><div class="bar2"><button class="btn ghost" data-act="mv-cancel">Cancel</button><button class="btn primary" data-act="mv-go"><span>Move to ' + E(target.name) + '</span><span class="cart-count" id="mv-n"></span></button></div></div>';
+      main.classList.add('has-cart');
+      drawList(); drawBar();
+      var qi = main.querySelector('#mv-q');
+      qi.addEventListener('input', UI.debounce(function () { st.q = qi.value.trim(); drawList(); }, 150));
+      if (main._mvChange) main.removeEventListener('change', main._mvChange);
+      main.addEventListener('change', main._mvChange = function (e) {
+        var id = e.target.getAttribute('data-mv'); if (!id) return;
+        if (e.target.checked) st.picked[id] = 1; else delete st.picked[id];
+        e.target.closest('.pe-row').classList.toggle('on', e.target.checked);
+        drawBar();
+      });
+      function leave() { delete mvState[catId]; App.go('a-items'); }
+      main.querySelector('.icon-btn[data-act="go"]').setAttribute('data-act', 'mv-cancel'); // back arrow = cancel too
+      App.acts = {
+        'mv-cancel': function () {
+          if (!n()) return leave();
+          UI.ask({ title: 'Cancel moving?', message: 'Nothing is moved. Your ' + n() + ' ticked item' + (n() > 1 ? 's stay where they are.' : ' stays where it is.'), ok: 'Yes, cancel', back: 'Keep ticking' }).then(function (ok) { if (ok) leave(); });
+        },
+        'mv-cat': function (el) { st.cat = el.getAttribute('data-id'); st.q = ''; qi.value = ''; drawList(); },
+        'mv-all': function () {
+          var list = shown(), allOn = list.every(function (i) { return st.picked[i.id]; });
+          list.forEach(function (i) { if (allOn) delete st.picked[i.id]; else st.picked[i.id] = 1; });
+          drawList(); drawBar();
+        },
+        'mv-go': function (el) {
+          var ids = Object.keys(st.picked);
+          if (!ids.length) { UI.toast('Tick the items to move.', true); return; }
+          App.run(el, 'admin.items.move', { ids: ids, category_id: catId }).then(function (r) {
+            if (!r) return;
+            delete mvState[catId];
+            UI.toast(r.moved + ' item' + (r.moved > 1 ? 's' : '') + ' moved to ' + r.category.name);
+            iFilter = catId; App.go('a-items');
+          });
+        }
+      };
+    });
+  };
 
   // =================== SETTINGS ===================
   V['a-settings'] = function (main) {
@@ -699,7 +842,7 @@
         cats.map(function (c) { return '<button type="button" class="chip" data-act="pe-cat" data-id="' + E(c.id) + '">' + I(c.icon || 'box') + E(c.name) + '</button>'; }).join('') + '</div></div></div>' +
         '<div class="row between" id="pe-tools"></div><div class="list" id="pe-list"></div>' +
         (p ? '<button class="btn ghost block" data-act="pe-del" style="color:var(--bad)">' + I('trash') + 'Delete this preset</button>' : '') +
-        '</div><div class="cartbar"><button class="btn primary" data-act="pe-save"><span>Save preset</span><span class="cart-count" id="pe-n"></span></button></div>';
+        '</div><div class="cartbar"><div class="bar2"><button class="btn ghost" data-act="pe-cancel">Cancel</button><button class="btn primary" data-act="pe-save"><span>Save preset</span><span class="cart-count" id="pe-n"></span></button></div></div>';
       main.classList.add('has-cart');
       drawList(); drawBar(); drawWho();
 
@@ -723,7 +866,14 @@
         st.picked[iid] = Math.max(1, Math.min(it ? it.qty : 99, (st.picked[iid] || 1) + d));
         el.closest('.pe-qty').querySelector('b').textContent = st.picked[iid];
       }
+      main.querySelector('.icon-btn[data-act="go"]').setAttribute('data-act', 'pe-cancel');
       App.acts = {
+        'pe-cancel': function () {
+          var changed = st.name.trim() !== (p ? p.name : '') || Object.keys(st.picked).length !== (p ? p.items.filter(function (x) { return !x.missing; }).length : 0) || (p ? !p.users.length : true) !== st.everyone;
+          var leave = function () { delete peState[id]; App.go('a-presets'); };
+          if (!changed) return leave();
+          UI.ask({ title: 'Discard changes?', message: p ? 'The preset stays as it was.' : 'This preset is not saved.', ok: 'Discard', back: 'Keep editing', danger: true }).then(function (ok) { if (ok) leave(); });
+        },
         'pe-cat': function (el) { st.cat = el.getAttribute('data-id'); st.q = ''; qi.value = ''; drawList(); },
         'pe-all': function () {
           var list = shown(), allOn = list.every(function (i) { return st.picked[i.id]; });
@@ -757,11 +907,35 @@
   };
 
   // =================== ACTIVITY LOG ===================
+  var logKind = 'all';
   V['a-log'] = function (main) {
-    return API.call('admin.log', { limit: 200 }).then(function (d) {
-      main.innerHTML = backHead('Activity log', 'Latest ' + d.log.length + ' actions', 'a-more') + '<div class="list">' + (d.log.length ? d.log.map(actRow).join('') : '<div class="li muted">Nothing yet.</div>') + '</div>';
+    return Promise.all([API.call('admin.log', { limit: 300 }), API.call('admin.users').then(function (u) { setWho(u.users); }, function () {}), itemsCache().then(function (d) { setCodes(d.items); }, function () {})]).then(function (r) {
+      var all = r[0].log;
+      function draw() {
+        var list = all.filter(function (a) { var k = friendly(a).kind; return logKind === 'all' ? k !== 'login' : logKind === 'people' ? (k === 'people' || k === 'login') : k === logKind; });
+        var chip = function (id, label) { return '<button class="chip" data-act="lk" data-id="' + id + '" aria-pressed="' + (logKind === id) + '">' + label + '</button>'; };
+        var html = '', day = '';
+        list.forEach(function (a) {
+          var dd = String(a.date).slice(0, 10);
+          if (dd !== day) { if (day) html += '</div>'; day = dd; html += '<div class="group-h">' + E(dayLabel(dd)) + '</div><div class="list">'; }
+          html += actRow(a);
+        });
+        if (day) html += '</div>';
+        main.innerHTML = backHead('Activity log', 'What happened, newest first', 'a-more') +
+          '<div class="chips" style="margin-bottom:4px">' + chip('all', 'All') + chip('out', KIND.out) + chip('hand', KIND.hand) + chip('item', KIND.item) + chip('people', KIND.people) + '</div>' +
+          (html || '<div class="card" style="margin-top:12px">' + UI.empty('list', 'Nothing here yet', '') + '</div>');
+        App.acts = { lk: function (el) { logKind = el.getAttribute('data-id'); draw(); } };
+      }
+      draw();
     });
   };
+  function dayLabel(d) {
+    var t = UI.todayStr(), y = UI.todayStr(-1);
+    if (d === t) return 'Today';
+    if (d === y) return 'Yesterday';
+    var dt = new Date(d + 'T00:00:00');
+    return isNaN(dt) ? d : dt.toLocaleDateString('en-GB', { weekday: 'short', day: 'numeric', month: 'short', year: dt.getFullYear() === new Date().getFullYear() ? undefined : 'numeric' });
+  }
 
   if (App.mode === 'admin') setTimeout(function () { if (App.user) refreshBadge(); }, 1500);
 })();
