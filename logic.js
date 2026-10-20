@@ -44,7 +44,12 @@ var Logic = (function () {
     ['REQUIRE_CHECKOUT_APPROVAL', 'FALSE', 'TRUE = admin must approve before items are taken out. FALSE = checkout is instant.'],
     ['AUTO_APPROVE_USERS', 'FALSE', 'TRUE = anyone who signs in with Google can use the app. FALSE = new users wait for admin approval.'],
     ['REQUIRE_PURPOSE', 'TRUE', 'TRUE = users must fill in the task (Tugasan) at checkout.'],
-    ['SESSION_DAYS', '30', 'How many days a phone stays signed in.']
+    ['SESSION_DAYS', '30', 'How many days a phone stays signed in.'],
+    ['EMAIL_USER_TAKE', 'TRUE', 'Email the person a receipt when they take gear (items, task, return date), and when a handover puts gear in their name.'],
+    ['EMAIL_USER_RETURN', 'TRUE', 'Email the person when an admin checks their return: what came back, its condition, and anything still with them.'],
+    ['EMAIL_ADMIN_TAKE', 'TRUE', 'Email admins every time someone takes gear or gear is handed over.'],
+    ['EMAIL_ADMIN_RETURN', 'TRUE', 'Email admins when someone asks to return gear, so they can check it.'],
+    ['ADMIN_EMAILS', '', 'Which admins get the admin emails, separated by commas. Leave empty = every active admin.']
   ];
 
   // Seed list — from "Borang Keluar-Masuk Barang" (Cetakan Versi ke-3, 21 July 2023)
@@ -113,12 +118,18 @@ var Logic = (function () {
     this.today = this.now.slice(0, 10);
     this.user = null;
     this.reads = {}; this.changed = {}; // which tables this action looked at / changed (lets the phone refresh only what is affected)
+    this.outbox = [];                     // emails to send once the action has saved (Code.gs sends them)
   }
   Ctx.prototype.all = function (t) { this.reads[t] = 1; return this.db.all(t); };
   Ctx.prototype.ins = function (t, o) { this.changed[t] = 1; var row = {}; SCHEMA[t].forEach(function (c) { row[c] = o[c] === undefined ? '' : o[c]; }); return this.db.insert(t, row); };
   Ctx.prototype.upd = function (t, row, patch) { this.changed[t] = 1; return this.db.update(t, row, patch); };
   Ctx.prototype.log = function (action, detail) {
     this.ins('Log', { date: this.now, email: this.user ? this.user.email : '', action: action, detail: clip(detail, 500) });
+  };
+  /** Queue an email. m = { to: [emails], subject, title, intro, items: [{ name, note }], facts: [[label, value]], tone } */
+  Ctx.prototype.mail = function (m) {
+    var to = (m.to || []).map(lower).filter(function (e, i, a) { return e.indexOf('@') > 0 && a.indexOf(e) === i; });
+    if (to.length) this.outbox.push(Object.assign({}, m, { to: to }));
   };
   Ctx.prototype.id = function (prefix) { return prefix + '-' + this.env.uuid().replace(/-/g, '').slice(0, 10).toUpperCase(); };
 
@@ -135,6 +146,22 @@ var Logic = (function () {
       APP_NAME: s.APP_NAME, ORG_NAME: s.ORG_NAME, ANNOUNCEMENT: s.ANNOUNCEMENT,
       REQUIRE_CHECKOUT_APPROVAL: bool(s.REQUIRE_CHECKOUT_APPROVAL), REQUIRE_PURPOSE: bool(s.REQUIRE_PURPOSE)
     };
+  }
+
+  // ---------- email notifications ----------
+  /** Admins who get admin emails (setting ADMIN_EMAILS, else every active admin), minus whoever did the action. */
+  function adminRecipients(c) {
+    var list = S(settingsMap(c).ADMIN_EMAILS).split(/[,;\s]+/).map(lower).filter(function (e) { return e.indexOf('@') > 0; });
+    if (!list.length) list = c.all('Users').filter(function (u) { return S(u.role) === 'admin' && S(u.status) === 'active'; }).map(function (u) { return lower(u.email); });
+    return list.filter(function (e) { return !c.user || e !== c.user.email; });
+  }
+  function on(c, key) { return bool(settingsMap(c)[key]); }
+  function lineList(lines) { return lines.map(function (l) { return { name: S(l.item_name || (l.item && l.item.name)) + (N(l.qty) > 1 ? ' ×' + N(l.qty) : ''), note: S(l.note || '') }; }); }
+  function dayText(d) {
+    var m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(S(d));
+    if (!m) return S(d) || 'Not set';
+    var dt = new Date(Date.UTC(+m[1], +m[2] - 1, +m[3]));
+    return ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'][dt.getUTCDay()] + ', ' + (+m[3]) + ' ' + ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'][+m[2] - 1] + ' ' + m[1];
   }
 
   // ---------- users & sessions ----------
@@ -353,6 +380,20 @@ var Logic = (function () {
     var hos = takes.map(function (t) { return pubHandover(createHandover(c, t, purpose, ret, clip(p.takeover_note, 300), o ? o.id : '')); });
     var waitText = hos.length ? 'Waiting for ' + hos.map(function (h) { return h.from_name + ' to hand over ' + h.item_name; }).join(', ') + '. They tap Hand over on their phone when you meet, or an admin approves.' : '';
     var vars = { name: c.user.name.split(' ')[0], order: o ? o.id : '', items: names };
+    if (o) {
+      var its = lineList(list.map(function (x) { return { item_name: x.item.name, qty: x.qty }; }));
+      var facts = [['Order', o.id], ['Task', purpose || '-'], ['Location', location || '-'], ['Return by', dayText(ret)]];
+      if (on(c, 'EMAIL_USER_TAKE')) c.mail({ to: [c.user.email], tone: needApproval ? 'warn' : 'out',
+        subject: needApproval ? 'Request sent · ' + o.id + ' · waiting for approval' : 'You took out ' + its.length + ' item' + (its.length > 1 ? 's' : '') + ' · ' + o.id,
+        title: needApproval ? 'Request sent' : 'Gear is under your name',
+        intro: needApproval ? 'An admin needs to approve this before you take the gear. You will get another email when it is approved.' : 'Here is your receipt. Please handle the gear with care and return it by the date below.',
+        items: its, facts: facts });
+      if (on(c, 'EMAIL_ADMIN_TAKE')) c.mail({ to: adminRecipients(c), tone: needApproval ? 'warn' : 'out',
+        subject: needApproval ? 'Approve: ' + c.user.name + ' wants ' + its.length + ' item' + (its.length > 1 ? 's' : '') : c.user.name + ' took out ' + its.length + ' item' + (its.length > 1 ? 's' : ''),
+        title: needApproval ? c.user.name + ' is asking to take gear' : c.user.name + ' took out gear',
+        intro: needApproval ? 'Open Admin → Approvals → Checkouts to approve or reject.' : 'For your records. Nothing to do.',
+        items: its, facts: [['Who', c.user.name + ' (' + c.user.email + ')']].concat(facts) });
+    }
     if (!o) return { order: null, handovers: hos, pending: true, title: 'Take-over sent', message: waitText };
     return {
       order: pubOrder(c, o, false), handovers: hos, pending: needApproval,
@@ -400,6 +441,10 @@ var Logic = (function () {
     cancelHandoversFor(c, lines.map(function (l) { return S(l.id); }), 'returned to store');
     refreshOrder(c, o);
     c.log('order.return_request', o.id + ': ' + lines.map(function (l) { return l.item_name; }).join(', ') + (note ? ' | note: ' + note : ''));
+    if (on(c, 'EMAIL_ADMIN_RETURN')) c.mail({ to: adminRecipients(c), tone: 'warn',
+      subject: c.user.name + ' is returning ' + lines.length + ' item' + (lines.length > 1 ? 's' : '') + ' · check them',
+      title: c.user.name + ' is returning gear', intro: 'Check the gear in the store, then open Admin → Approvals → Returns.',
+      items: lineList(lines), facts: [['Order', o.id], ['Their note', note || '-'], ['Photo', url ? 'Yes, see the app' : 'No']] });
     return { message: settingsMap(c).RETURN_MESSAGE };
   };
   function appendNote(a, b) { return S(a) ? S(a) + ' | ' + b : b; }
@@ -457,6 +502,11 @@ var Logic = (function () {
     c.upd('Handovers', h, { status: 'DONE', decided_at: c.now, decided_by: c.user.name, new_order_id: no.id });
     itemLog(c, line.item_id, 'note', 'Handed over from ' + h.from_name + ' to ' + h.to_name + (isHolder ? '' : ' (approved by admin ' + c.user.name + ')'), { order_id: no.id });
     c.log('handover.done', S(h.item_name) + ': ' + h.from_name + ' → ' + h.to_name + ' (' + no.id + ')');
+    var hItems = [{ name: S(h.item_name) + (N(line.qty) > 1 ? ' ×' + N(line.qty) : ''), note: 'From ' + h.from_name }];
+    if (on(c, 'EMAIL_USER_TAKE')) c.mail({ to: [h.to_email], tone: 'out', subject: S(h.item_name) + ' is now under your name · ' + no.id, title: 'Gear handed over to you',
+      intro: h.from_name + ' handed this over to you. Please return it by the date below.', items: hItems, facts: [['Order', no.id], ['Task', S(h.purpose) || '-'], ['Return by', dayText(h.expected_return)]] });
+    if (on(c, 'EMAIL_ADMIN_TAKE')) c.mail({ to: adminRecipients(c).filter(function (e) { return e !== lower(h.to_email); }), tone: 'info', subject: 'Handover: ' + S(h.item_name) + ' · ' + h.from_name + ' → ' + h.to_name,
+      title: 'Gear handed over', intro: 'For your records. Nothing to do.', items: hItems, facts: [['From', h.from_name], ['To', h.to_name], ['Order', no.id]] });
     return { ok: true, new_order_id: no.id };
   };
   A['handover.cancel'] = function (c, p) {
@@ -549,6 +599,8 @@ var Logic = (function () {
     c.upd('Orders', o, { approved_by: c.user.name, approved_at: c.now });
     refreshOrder(c, o);
     c.log('order.approve_out', o.id);
+    if (on(c, 'EMAIL_USER_TAKE')) c.mail({ to: [o.email], tone: 'ok', subject: 'Approved · ' + o.id + ' · you can take the gear', title: 'Your request is approved',
+      intro: 'You can take the gear now. It is under your name.', items: lineList(lines), facts: [['Order', o.id], ['Task', S(o.purpose) || '-'], ['Return by', dayText(o.expected_return)], ['Approved by', c.user.name]] });
     return { order: pubOrder(c, o, true) };
   };
   A['admin.order.reject_out'] = function (c, p) {
@@ -560,6 +612,8 @@ var Logic = (function () {
     var st = refreshOrder(c, o);
     if (st === 'CANCELLED') c.upd('Orders', o, { status: 'REJECTED' });
     c.log('order.reject_out', o.id + (p.reason ? ': ' + p.reason : ''));
+    if (on(c, 'EMAIL_USER_TAKE')) c.mail({ to: [o.email], tone: 'bad', subject: 'Not approved · ' + o.id, title: 'Your request was not approved',
+      intro: p.reason ? 'Reason: ' + clip(p.reason, 200) : 'Ask an admin for details.', items: lineList(lines), facts: [['Order', o.id], ['Admin', c.user.name]] });
     return { order: pubOrder(c, o, true) };
   };
 
@@ -601,6 +655,13 @@ var Logic = (function () {
     refreshOrder(c, o);
     c.log('order.return_approve', o.id + ': ' + (lines.length ? lines.map(function (l) { return l.item_name + ' (' + (want[S(l.id)].condition || 'Good') + ')'; }).join(', ') : 'nothing returned') +
       (kept.length ? '; still with ' + o.name + ': ' + kept.map(function (l) { return l.item_name; }).join(', ') : ''));
+    if (on(c, 'EMAIL_USER_RETURN')) c.mail({ to: [o.email], tone: 'ok',
+      subject: lines.length ? 'Return checked · ' + o.id + (kept.length ? ' · ' + kept.length + ' still with you' : '') : 'Not returned yet · ' + o.id,
+      title: lines.length ? 'Your return is checked' : 'Some gear is still with you',
+      intro: lines.length ? 'Thank you. Here is what the admin recorded.' : 'The admin could not find these items in the store, so they are still under your name.',
+      items: lines.map(function (l) { var x = want[S(l.id)]; var cd = CONDITIONS.indexOf(S(x.condition)) >= 0 ? S(x.condition) : 'Good'; return { name: S(l.item_name) + (N(l.qty) > 1 ? ' ×' + N(l.qty) : ''), note: cd + (S(x.remark) ? ': ' + clip(x.remark, 200) : '') }; })
+        .concat(kept.map(function (l) { var nt = clip(keep[S(l.id)].note, 200); return { name: S(l.item_name), note: 'Still with you' + (nt ? ': ' + nt : '') }; })),
+      facts: [['Order', o.id], ['Checked by', c.user.name]] });
     return { order: pubOrder(c, o, true), returned: lines.length, kept: kept.length };
   };
   A['admin.return.reject'] = function (c, p) {
@@ -612,6 +673,8 @@ var Logic = (function () {
     lines.forEach(function (l) { c.upd('OrderLines', l, { status: 'OUT', return_remark: 'Return rejected: ' + reason }); });
     refreshOrder(c, o);
     c.log('order.return_reject', o.id + ': ' + reason);
+    if (on(c, 'EMAIL_USER_RETURN')) c.mail({ to: [o.email], tone: 'bad', subject: 'Return not accepted yet · ' + o.id, title: 'Your return was not accepted yet',
+      intro: 'The items are back under your name. Reason from the admin: ' + reason, items: lineList(lines), facts: [['Order', o.id], ['Admin', c.user.name]] });
     return { order: pubOrder(c, o, true) };
   };
   A['admin.order.cancel'] = function (c, p) {
@@ -872,6 +935,27 @@ var Logic = (function () {
   };
 
   // ---------- admin: categories ----------
+  /** Built-in icon name, an https link, or (demo / just uploaded) a small image. */
+  function validIcon(v) {
+    v = S(v).trim();
+    if (!v) return 'box';
+    if (/^orig\|/.test(v)) return 'orig|' + validIcon(v.slice(5)); // "orig|" = keep the picture's own colours
+    if (/^[a-z]{2,16}$/.test(v)) return v;
+    if (/^https:\/\/\S+$/.test(v) && v.length <= 1000) return v;
+    if (/^data:image\/(png|jpeg|webp);base64,[A-Za-z0-9+\/=]+$/.test(v) && v.length <= 300000) return v;
+    fail('That icon is not valid. Use an image link starting with https://');
+  }
+  A['admin.category.icon'] = function (c, p) {
+    var cur = c.all('Categories').filter(function (x) { return S(x.id) === S(p.id); })[0];
+    if (!cur) fail('Category not found.', 'NOT_FOUND');
+    if (!p.photo) fail('Choose a picture first.');
+    if (S(p.photo).length > 600000) fail('That picture is too big. Try a smaller one.');
+    var url = photoUrl(c, p.photo, 'items', 'category-' + S(cur.id));
+    if (p.orig) url = 'orig|' + url;
+    c.upd('Categories', cur, { icon: url });
+    c.log('category.icon', S(cur.id) + ' ' + S(cur.name));
+    return { category: cur, icon: url };
+  };
   A['admin.category.save'] = function (c, p) {
     var name = clip(p.name, 60);
     if (!name) fail('Category name is required.');
@@ -881,14 +965,14 @@ var Logic = (function () {
       var base = id, n = 2;
       while (c.all('Categories').some(function (x) { return S(x.id) === id; })) { id = base.slice(0, 2) + n; n++; }
       var maxSort = c.all('Categories').reduce(function (m, x) { return Math.max(m, N(x.sort)); }, 0);
-      var cat = c.ins('Categories', { id: id, name: name, icon: S(p.icon || 'box'), sort: maxSort + 1, status: 'active' });
+      var cat = c.ins('Categories', { id: id, name: name, icon: validIcon(p.icon), sort: maxSort + 1, status: 'active' });
       c.log('category.create', id + ' ' + name);
       return { category: cat };
     }
     var cur = c.all('Categories').filter(function (x) { return S(x.id) === S(p.id); })[0];
     if (!cur) fail('Category not found.', 'NOT_FOUND');
     var patch = { name: name };
-    if (p.icon) patch.icon = S(p.icon);
+    if (p.icon) patch.icon = validIcon(p.icon);
     if (p.sort !== undefined) patch.sort = N(p.sort);
     c.upd('Categories', cur, patch);
     c.log('category.edit', cur.id + ' → ' + name);
@@ -968,13 +1052,15 @@ var Logic = (function () {
     var m = settingsMap(c), desc = {};
     DEFAULT_SETTINGS.forEach(function (d) { desc[d[0]] = d[2]; });
     c.all('Settings').forEach(function (r) { if (r.description) desc[S(r.key)] = S(r.description); });
-    return { settings: Object.keys(m).map(function (k) { return { key: k, value: m[k], description: desc[k] || '' }; }) };
+    // mail: the backend can send email (Code.gs v0.9.4+). Older backends hide the email switches.
+    return { settings: Object.keys(m).map(function (k) { return { key: k, value: m[k], description: desc[k] || '' }; }), mail: !!c.env.canMail };
   };
   A['admin.settings.save'] = function (c, p) {
     var vals = p.values || {}, rows = c.all('Settings'), changed = [];
     Object.keys(vals).forEach(function (k) {
       var v = clip(vals[k], 2000);
-      if (/^(REQUIRE_|AUTO_)/.test(k)) v = bool(v) ? 'TRUE' : 'FALSE';
+      if (/^(REQUIRE_|AUTO_|EMAIL_)/.test(k)) v = bool(v) ? 'TRUE' : 'FALSE';
+      if (k === 'ADMIN_EMAILS') v = v.split(/[,;\s]+/).map(lower).filter(function (e) { return /^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(e); }).join(', ');
       var row = rows.filter(function (r) { return S(r.key) === k; })[0];
       if (row) { if (S(row.value) !== v) { c.upd('Settings', row, { value: v }); changed.push(k); } }
       else { var d = DEFAULT_SETTINGS.filter(function (x) { return x[0] === k; })[0]; if (d) { c.ins('Settings', { key: k, value: v, description: d[2] }); changed.push(k); } }
@@ -998,7 +1084,9 @@ var Logic = (function () {
     var c = new Ctx(io, token);
     try {
       if (PUBLIC.indexOf(action) < 0) requireSession(c, action.indexOf('admin.') === 0);
-      return fn(c, payload || {});
+      var out = fn(c, payload || {});
+      if (meta) meta.mail = c.outbox; // only when the action succeeded
+      return out;
     } finally {
       if (meta) { meta.reads = Object.keys(c.reads); meta.changed = Object.keys(c.changed); }
     }

@@ -55,7 +55,35 @@ var UI = (function () {
     link: '<path d="M10 14a4 4 0 0 0 5.7 0l3-3a4 4 0 0 0-5.7-5.7l-1 1M14 10a4 4 0 0 0-5.7 0l-3 3a4 4 0 0 0 5.7 5.7l1-1"/>'
   };
   var ICONS = ['camera', 'lens', 'tripod', 'gimbal', 'battery', 'light', 'mic', 'bag', 'card', 'box'];
+  var maskN = 0;
+  /** Does this picture have a see-through background? (simple icons do, photos and JPGs don't) */
+  function hasAlpha(src) {
+    return new Promise(function (resolve) {
+      var img = new Image();
+      img.onload = function () {
+        try {
+          var cv = document.createElement('canvas'); cv.width = Math.min(64, img.width); cv.height = Math.min(64, img.height);
+          var cx = cv.getContext('2d'); cx.drawImage(img, 0, 0, cv.width, cv.height);
+          var d = cx.getImageData(0, 0, cv.width, cv.height).data, clear = 0;
+          for (var i = 3; i < d.length; i += 4) if (d[i] < 200) clear++;
+          resolve(clear > d.length / 4 * 0.08);
+        } catch (e) { resolve(true); }
+      };
+      img.onerror = function () { resolve(true); };
+      img.src = src;
+    });
+  }
   function icon(name, cls) {
+    // A category can use its own picture (uploaded or a link): draw it inside the same 24×24 box as the built-in icons.
+    var pic = /^(orig\|)?(https:\/\/|data:image\/)/.exec(String(name || ''));
+    if (pic) {
+      var url = esc(String(name).replace(/^orig\|/, '')), img = '<image href="' + url + '" x="1" y="1" width="22" height="22" preserveAspectRatio="xMidYMid meet"/>';
+      // "orig|…" = keep the picture's own colours. Otherwise use its shape only and paint it in the app's colour,
+      // so a black, white or coloured icon all look right on light and dark backgrounds.
+      if (pic[1]) return '<svg viewBox="0 0 24 24" aria-hidden="true" class="ci' + (cls ? ' ' + cls : '') + '">' + img + '</svg>';
+      var id = 'cim' + (++maskN);
+      return '<svg viewBox="0 0 24 24" aria-hidden="true" class="ci' + (cls ? ' ' + cls : '') + '"><mask id="' + id + '" style="mask-type:alpha" maskUnits="userSpaceOnUse" x="0" y="0" width="24" height="24">' + img + '</mask><rect width="24" height="24" fill="currentColor" mask="url(#' + id + ')"/></svg>';
+    }
     return '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"' + (cls ? ' class="' + cls + '"' : '') + '>' + (P[name] || P.box) + '</svg>';
   }
   function esc(s) { return String(s === null || s === undefined ? '' : s).replace(/[&<>"']/g, function (c) { return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]; }); }
@@ -132,14 +160,14 @@ var UI = (function () {
         (o.message ? '<p class="muted" style="margin:0 0 14px">' + esc(o.message) + '</p>' : '') +
         (o.input ? '<label class="field" style="margin-bottom:14px"><span>' + esc(o.input) + '</span><textarea class="input" id="ask-input" autofocus placeholder="' + esc(o.placeholder || '') + '"></textarea></label>' : '') +
         '<div class="row"><button class="btn ghost grow" data-act="close-sheet">' + esc(o.back || 'Back') + '</button><button class="btn grow ' + (o.danger ? 'danger' : 'primary') + '" data-act="ask-ok">' + esc(o.ok || 'Confirm') + '</button></div>',
-        { 'ask-ok': function () { done = true; var v = o.input ? s.el.querySelector('#ask-input').value.trim() : true; if (o.input && o.required && !v) { toast('Please write a reason.', true); done = false; return; } s.close(); resolve(v); } },
+        { 'ask-ok': function () { done = true; var v = o.input ? s.el.querySelector('#ask-input').value.trim() : true; if (o.input && o.required && !v) { toast(o.requiredMsg || 'Please write a reason.', true); done = false; return; } s.close(); resolve(v); } },
         { onClose: function () { if (!done) resolve(o.input ? null : false); } });
     });
   }
 
   // ---------- photos ----------
-  function compress(file, max, q) {
-    max = max || 1280; q = q || 0.72;
+  function compress(file, max, q, type) {
+    max = max || 1280; q = q || 0.72; type = type || 'image/jpeg';
     return new Promise(function (resolve, reject) {
       if (!file || !/^image\//.test(file.type)) return reject(new Error('Choose an image file.'));
       var rd = new FileReader();
@@ -151,7 +179,7 @@ var UI = (function () {
           var s = Math.min(1, max / Math.max(img.width, img.height));
           var cv = document.createElement('canvas'); cv.width = Math.round(img.width * s); cv.height = Math.round(img.height * s);
           cv.getContext('2d').drawImage(img, 0, 0, cv.width, cv.height);
-          resolve(cv.toDataURL('image/jpeg', q));
+          resolve(type === 'image/png' ? cv.toDataURL('image/png') : cv.toDataURL('image/jpeg', q)); // PNG keeps see-through backgrounds
         };
         img.src = rd.result;
       };
@@ -159,7 +187,8 @@ var UI = (function () {
     });
   }
   /** Open the camera (capture) or the photo picker; resolves with a compressed data URL or null. */
-  function pickPhoto(capture) {
+  function pickPhoto(capture, opt) {
+    opt = opt || {};
     return new Promise(function (resolve) {
       var inp = document.createElement('input'); inp.type = 'file'; inp.accept = 'image/*';
       if (capture) inp.setAttribute('capture', 'environment');
@@ -167,7 +196,7 @@ var UI = (function () {
       inp.addEventListener('change', function () {
         var f = inp.files && inp.files[0]; inp.remove();
         if (!f) return resolve(null);
-        compress(f).then(resolve, function (e) { toast(e.message, true); resolve(null); });
+        compress(f, opt.max, opt.q, opt.type).then(resolve, function (e) { toast(e.message, true); resolve(null); });
       });
       inp.click();
     });
@@ -225,6 +254,6 @@ var UI = (function () {
   return {
     icon: icon, ICONS: ICONS, esc: esc, when: when, day: day, daysAgo: daysAgo, todayStr: todayStr, pill: pill, linePill: linePill, orderPill: orderPill, condPill: condPill,
     toast: toast, sheet: sheet, sheetHead: sheetHead, topSheet: topSheet, closeAll: closeAll, ask: ask, pickPhoto: pickPhoto, photos: photos, photoList: photoList,
-    debounce: debounce, thumb: thumb, initials: initials, loading: loading, boot: boot, empty: empty
+    debounce: debounce, hasAlpha: hasAlpha, thumb: thumb, initials: initials, loading: loading, boot: boot, empty: empty
   };
 })();

@@ -20,7 +20,7 @@ var API = (function () {
       db: new MemDB(data),
       env: {
         now: function () { return new Date(); }, fmt: fmtLocal, uuid: uuid4,
-        savePhoto: function (dataUrl) { return dataUrl; },
+        savePhoto: function (dataUrl) { return dataUrl; }, canMail: true, // demo shows the email switches (nothing is really sent)
         verifyGoogle: function (cred) { var p = String(cred).replace(/^demo:/, '').split('|'); return { email: p[0], name: p[1] || p[0], picture: '' }; }
       }
     };

@@ -80,6 +80,7 @@
       case 'category.create': r = ['folder', 'ok', 'item', 'New category', d.replace(/^\S+ /, '')]; break;
       case 'category.edit': r = ['folder', 'mute', 'item', 'Category renamed', d.replace(/^\S+ → /, '')]; break;
       case 'category.archive': r = ['trash', 'mute', 'item', 'Category removed', d]; break;
+      case 'category.icon': r = ['image', 'info', 'item', 'Category icon changed', d.replace(/^\S+ /, '')]; break;
       case 'category.restore': r = ['folder', 'ok', 'item', 'Category restored', d]; break;
       case 'user.register': r = ['user', 'warn', 'people', n + ' signed in for the first time', /pending/.test(d) ? 'Waiting for approval' : 'Let in automatically']; break;
       case 'user.add': r = ['users', 'ok', 'people', 'Person added by ' + f, d.replace(' as ', ' · ')]; break;
@@ -598,13 +599,21 @@
     function reload() { itemsCache().then(draw, App.error); }
     return itemsCache().then(draw);
   };
+  function isPic(v) { return /^(orig\|)?(https:\/\/|data:image\/)/.test(String(v || '')); }
+  function bare(v) { return String(v || '').replace(/^orig\|/, ''); }
   function catForm(c, count, done) {
     var isNew = !c; c = c || { icon: 'box' };
-    var icon = c.icon;
+    var icon = c.icon, upload = null; // icon: built-in name or picture link; upload: a new picture waiting to be saved
+    var tint = !/^orig\|/.test(String(c.icon || '')); // true = paint the picture in the app's colours
     var s = UI.sheet(UI.sheetHead(isNew ? 'Add category' : 'Edit category', isNew ? '' : c.id) +
       '<form class="stack" id="cf" novalidate><label class="field"><span>Name</span><input class="input" id="cf-n" maxlength="60" value="' + E(c.name || '') + '" autofocus placeholder="e.g. Streaming"></label>' +
       (isNew ? '<label class="field"><span>Short code (optional)</span><input class="input" id="cf-c" maxlength="3" placeholder="e.g. STR" style="text-transform:uppercase"><small>2–3 letters, used for item codes like STR-01.</small></label>' : '') +
       '<div class="field"><span>Icon</span><div class="chips" style="flex-wrap:wrap" id="cf-i">' + UI.ICONS.map(function (k) { return '<button type="button" class="chip" data-i="' + k + '" aria-pressed="' + (k === icon) + '" aria-label="' + k + '">' + I(k) + '</button>'; }).join('') + '</div></div>' +
+      '<div class="field"><span>Or use your own icon</span><div class="own-ic"><div class="own-pair" id="cf-own"></div>' +
+      '<div class="row wrap" style="gap:8px"><button type="button" class="btn sm ghost" data-act="cf-up">' + I('upload') + 'Upload picture</button><button type="button" class="btn sm ghost" data-act="cf-link">' + I('link') + 'Paste link</button></div></div>' +
+      '<label class="toggle own-tint" id="cf-tintrow"' + (isPic(icon) ? '' : ' hidden') + '><span><b>Match app colours</b><small class="muted" style="display:block">On: any colour works, black or white. Off: keep the picture\'s own colours (logos, photos).</small></span>' +
+      '<span class="switch"><input type="checkbox" id="cf-tint"' + (tint ? ' checked' : '') + ' aria-label="Match app colours"><i></i></span></label>' +
+      '<small>Use a simple icon PNG with a see-through background (it is resized to 256 px). Black, white or any colour is fine. The two boxes show it on light and dark.</small></div>' +
       '<button class="btn primary block" type="submit" id="cf-save" style="min-height:52px">' + (isNew ? 'Add category' : 'Save') + '</button>' +
       (!isNew ? '<button class="btn ghost block" type="button" data-act="cf-move">' + I('swap') + 'Move items into ' + E(c.name) + '</button>' +
         '<button class="btn danger block" type="button" data-act="cf-del">' + I('trash') + 'Remove category</button>' : '') + '</form>', {
@@ -612,17 +621,52 @@
       'cf-del': function (el) {
         if (count[c.id]) { UI.toast('Move or remove its ' + count[c.id] + ' items first.', true); return; }
         App.run(el, 'admin.category.archive', { id: c.id, archived: true }).then(function (r) { if (r) { s.close(); done(); } });
+      },
+      'cf-up': function () {
+        UI.pickPhoto(false, { max: 256, type: 'image/png' }).then(function (src) {
+          if (!src) return;
+          upload = src;
+          UI.hasAlpha(src).then(function (see) { tint = see; s.el.querySelector('#cf-tint').checked = see; showOwn(src); }); // photos keep colours, icons get recoloured
+        });
+      },
+      'cf-link': function () {
+        UI.ask({ title: 'Icon from a link', message: 'On Google Images or a website, right-click the picture → Copy image address, then paste it here.', input: 'Image link', placeholder: 'https://…', ok: 'Use this icon', required: true, requiredMsg: 'Paste a link first.' }).then(function (v) {
+          v = String(v || '').trim(); if (!v) return;
+          if (!/^https:\/\/\S+$/.test(v)) { UI.toast('The link must start with https://', true); return; }
+          upload = null; icon = v; tint = true; s.el.querySelector('#cf-tint').checked = true; showOwn(v);
+        });
       }
     });
-    s.el.querySelectorAll('#cf-i .chip').forEach(function (b) { b.addEventListener('click', function () { icon = b.getAttribute('data-i'); s.el.querySelectorAll('#cf-i .chip').forEach(function (x) { x.setAttribute('aria-pressed', x === b); }); }); });
+    function own(src) { return src ? (tint ? bare(src) : 'orig|' + bare(src)) : ''; }
+    function showOwn(src) {
+      var box = s.el.querySelector('#cf-own');
+      box.innerHTML = src ? '<span class="own-prev on">' + I(own(src)) + '</span><span class="own-prev dark">' + I(own(src)) + '</span>' : '<span class="own-prev">' + I('image') + '</span>';
+      s.el.querySelector('#cf-tintrow').hidden = !src;
+      if (src) s.el.querySelectorAll('#cf-i .chip').forEach(function (x) { x.setAttribute('aria-pressed', 'false'); });
+    }
+    showOwn(isPic(icon) ? icon : '');
+    s.el.querySelector('#cf-tint').addEventListener('change', function (e) { tint = e.target.checked; showOwn(upload || icon); });
+    s.el.querySelectorAll('#cf-i .chip').forEach(function (b) {
+      b.addEventListener('click', function () {
+        icon = b.getAttribute('data-i'); upload = null;
+        s.el.querySelectorAll('#cf-i .chip').forEach(function (x) { x.setAttribute('aria-pressed', x === b); });
+        showOwn('');
+      });
+    });
     s.el.querySelector('#cf').addEventListener('submit', function (e) {
       e.preventDefault();
       var n = s.el.querySelector('#cf-n').value.trim(); if (!n) { UI.toast('Give it a name.', true); return; }
-      App.run(s.el.querySelector('#cf-save'), 'admin.category.save', { id: isNew ? '' : c.id, name: n, icon: icon, code: isNew ? s.el.querySelector('#cf-c').value : '' }).then(function (r) {
+      var btn = s.el.querySelector('#cf-save');
+      var send = upload ? (isPic(c.icon) && !isNew ? c.icon : (isPic(icon) ? 'box' : icon)) : (isPic(icon) ? own(icon) : icon);
+      App.run(btn, 'admin.category.save', { id: isNew ? '' : c.id, name: n, icon: send, code: isNew ? s.el.querySelector('#cf-c').value : '' }).then(function (r) {
         if (!r) return;
-        s.close(); done();
-        if (!isNew) { UI.toast('Saved'); return; }
-        UI.ask({ title: n + ' is ready', message: 'Move existing items into it now? You can tick gear from any category.', ok: 'Move items in', back: 'Not now' }).then(function (go) { if (go) App.go('a-cat-move/' + r.category.id); else UI.toast('Category added'); });
+        var id = r.category.id;
+        (upload ? App.run(btn, 'admin.category.icon', { id: id, photo: upload, orig: !tint }) : Promise.resolve(true)).then(function (ok) {
+          s.close(); done();
+          if (upload && !ok) UI.toast('Category saved, but the picture did not upload. Try again from ✏️.', true);
+          if (!isNew) { UI.toast('Saved'); return; }
+          UI.ask({ title: n + ' is ready', message: 'Move existing items into it now? You can tick gear from any category.', ok: 'Move items in', back: 'Not now' }).then(function (go) { if (go) App.go('a-cat-move/' + id); else UI.toast('Category added'); });
+        });
       });
     });
   }
@@ -712,17 +756,22 @@
     var LABEL = {
       APP_NAME: 'App name', ORG_NAME: 'Team / unit name', ANNOUNCEMENT: 'Dashboard announcement', DONE_TITLE: 'After checkout · heading', DONE_MESSAGE: 'After checkout · message',
       PENDING_MESSAGE: 'After checkout · message when approval is on', RETURN_MESSAGE: 'After return request · message', REQUIRE_CHECKOUT_APPROVAL: 'Admin approves every checkout',
-      AUTO_APPROVE_USERS: 'Let anyone with Google sign in without approval', REQUIRE_PURPOSE: 'Tugasan is required at checkout', SESSION_DAYS: 'Days a phone stays signed in'
+      AUTO_APPROVE_USERS: 'Let anyone with Google sign in without approval', REQUIRE_PURPOSE: 'Tugasan is required at checkout', SESSION_DAYS: 'Days a phone stays signed in',
+      EMAIL_USER_TAKE: 'Email the person when they take gear', EMAIL_USER_RETURN: 'Email the person when their return is checked',
+      EMAIL_ADMIN_TAKE: 'Email admins when someone takes gear', EMAIL_ADMIN_RETURN: 'Email admins when someone returns gear', ADMIN_EMAILS: 'Admins who get emails'
     };
-    var ORDER = ['DONE_TITLE', 'DONE_MESSAGE', 'PENDING_MESSAGE', 'RETURN_MESSAGE', 'ANNOUNCEMENT', 'REQUIRE_CHECKOUT_APPROVAL', 'REQUIRE_PURPOSE', 'AUTO_APPROVE_USERS', 'APP_NAME', 'ORG_NAME', 'SESSION_DAYS'];
+    var ORDER = ['DONE_TITLE', 'DONE_MESSAGE', 'PENDING_MESSAGE', 'RETURN_MESSAGE', 'ANNOUNCEMENT', 'REQUIRE_CHECKOUT_APPROVAL', 'REQUIRE_PURPOSE', 'AUTO_APPROVE_USERS',
+      'EMAIL_USER_TAKE', 'EMAIL_USER_RETURN', 'EMAIL_ADMIN_TAKE', 'EMAIL_ADMIN_RETURN', 'ADMIN_EMAILS', 'APP_NAME', 'ORG_NAME', 'SESSION_DAYS'];
+    var MAILK = /^(EMAIL_|ADMIN_EMAILS$)/;
     function draw(d) {
       var map = {}; d.settings.forEach(function (x) { map[x.key] = x; });
-      var keys = ORDER.filter(function (k) { return map[k]; }).concat(d.settings.map(function (x) { return x.key; }).filter(function (k) { return ORDER.indexOf(k) < 0; }));
+      var keys = ORDER.filter(function (k) { return map[k]; }).concat(d.settings.map(function (x) { return x.key; }).filter(function (k) { return ORDER.indexOf(k) < 0; }))
+        .filter(function (k) { return d.mail || !MAILK.test(k); }); // email switches only once the backend can send email
       var field = function (k) {
         var x = map[k], lab = LABEL[k] || k;
-        if (/^(REQUIRE_|AUTO_)/.test(k)) return '<div class="card pad toggle"><div><b>' + E(lab) + '</b><div class="small muted">' + E(x.description) + '</div></div><span class="switch"><input type="checkbox" id="s-' + k + '" data-k="' + k + '"' + (/^(true|yes|1)$/i.test(x.value) ? ' checked' : '') + ' aria-label="' + E(lab) + '"><i></i></span></div>';
+        if (/^(REQUIRE_|AUTO_|EMAIL_)/.test(k)) return '<div class="card pad toggle"><div><b>' + E(lab) + '</b><div class="small muted">' + E(x.description) + '</div></div><span class="switch"><input type="checkbox" id="s-' + k + '" data-k="' + k + '"' + (/^(true|yes|1)$/i.test(x.value) ? ' checked' : '') + ' aria-label="' + E(lab) + '"><i></i></span></div>';
         var long = /MESSAGE|ANNOUNCEMENT/.test(k);
-        return '<label class="field"><span>' + E(lab) + '</span>' + (long ? '<textarea class="input" id="s-' + k + '" data-k="' + k + '" maxlength="2000">' + E(x.value) + '</textarea>' : '<input class="input" id="s-' + k + '" data-k="' + k + '"' + (k === 'SESSION_DAYS' ? ' type="number" min="1" max="365"' : '') + ' value="' + E(x.value) + '">') + '<small>' + E(x.description) + '</small></label>';
+        return '<label class="field"><span>' + E(lab) + '</span>' + (long ? '<textarea class="input" id="s-' + k + '" data-k="' + k + '" maxlength="2000">' + E(x.value) + '</textarea>' : '<input class="input" id="s-' + k + '" data-k="' + k + '"' + (k === 'SESSION_DAYS' ? ' type="number" min="1" max="365"' : k === 'ADMIN_EMAILS' ? ' inputmode="email" placeholder="Empty = every admin"' : '') + ' value="' + E(x.value) + '">') + '<small>' + E(x.description) + '</small></label>';
       };
       main.innerHTML = backHead('Settings & messages', 'Saved to the App Settings sheet', 'a-more') +
         '<form class="stack" id="sf" novalidate>' +
@@ -730,7 +779,9 @@
         '<div class="ticket" id="prev" aria-live="polite"></div>' +
         keys.filter(function (k) { return /MESSAGE|TITLE|ANNOUNCEMENT/.test(k); }).map(field).join('') +
         '<div class="group-h">' + I('sliders') + 'Rules</div>' + keys.filter(function (k) { return /^(REQUIRE_|AUTO_)/.test(k); }).map(field).join('') +
-        '<div class="group-h">' + I('info') + 'App</div>' + keys.filter(function (k) { return !/MESSAGE|TITLE|ANNOUNCEMENT|^(REQUIRE_|AUTO_)/.test(k); }).map(field).join('') +
+        (d.mail ? '<div class="group-h">' + I('note') + 'Email notifications</div>' + keys.filter(function (k) { return MAILK.test(k); }).map(field).join('') +
+        '<p class="small muted" style="margin:-4px 2px 0">Emails come from the Google account that owns the backend. A free Gmail account can send to about 100 people a day.</p>' : '') +
+        '<div class="group-h">' + I('info') + 'App</div>' + keys.filter(function (k) { return !/MESSAGE|TITLE|ANNOUNCEMENT|^(REQUIRE_|AUTO_)/.test(k) && !MAILK.test(k); }).map(field).join('') +
         '<button class="btn primary block" type="submit" id="sf-save" style="min-height:52px;position:sticky;bottom:calc(var(--nav-h) + 12px + env(safe-area-inset-bottom, 0px))">Save settings</button></form>';
       function preview() {
         var fill = function (t) { return String(t).replace(/\{name\}/g, App.user.name.split(' ')[0]).replace(/\{order\}/g, 'ORD-' + UI.todayStr().replace(/-/g, '').slice(2) + '-001').replace(/\{items\}/g, 'Sony A7IV, Wireless Rode #1'); };
